@@ -1408,8 +1408,24 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 }
 
 // resolveUserName fetches a user's display name via the Contact API, with caching.
+//
+// Returns:
+//   - the display name on success
+//   - "" (empty string) when the Contact API call fails or returns no usable
+//     data — callers must NOT treat this as an alias for the open_id (the
+//     previous behaviour). Empty means "we don't know who this is"; the
+//     injection-header builder turns this into an absent sender_name field
+//     so agents don't mistake the open_id for a display name.
+//   - the input verbatim when the input is not a valid Feishu lookup id
+//     (e.g. a union_id "on_xxx" was passed by mistake): kept as a debug
+//     breadcrumb so misuse surfaces in logs rather than silently turning
+//     into "unknown".
 func (p *Platform) resolveUserName(openID string) string {
 	if !isValidFeishuLookupID(openID) {
+		// Not an open_id-shaped string — most likely a union_id or app_id
+		// passed in by mistake. Pass through verbatim so the caller sees
+		// the offending value in any downstream log, rather than masking
+		// it as an empty string.
 		return openID
 	}
 	if cached, ok := p.userNameCache.Load(openID); ok {
@@ -1422,11 +1438,18 @@ func (p *Platform) resolveUserName(openID string) string {
 			Build())
 	if err != nil {
 		slog.Debug(p.tag()+": resolve user name failed", "open_id", openID, "error", err)
-		return openID
+		// Contact API call failed (network, missing scope, etc.). Surface
+		// as "no name available" so the injection-header builder omits the
+		// sender_name field — emitting the open_id here would falsely
+		// present an ID as a display name (issue: agents have repeatedly
+		// shown the literal ou_xxx to end-users in this case).
+		return ""
 	}
 	if !resp.Success() || resp.Data == nil || resp.Data.User == nil || resp.Data.User.Name == nil {
 		slog.Debug(p.tag()+": resolve user name: no data", "open_id", openID, "code", resp.Code)
-		return openID
+		// Contact API returned no usable data — same treatment as the
+		// network-error branch above. See comment there.
+		return ""
 	}
 	name := *resp.Data.User.Name
 	p.userNameCache.Store(openID, name)
@@ -1785,8 +1808,13 @@ func (p *Platform) fetchSingleMessage(ctx context.Context, messageID string) *ch
 	if item.Sender.SenderType == "app" {
 		senderName = p.resolveBotSenderName(item.Sender.ID)
 	} else if item.Sender.ID != "" {
-		resolved := p.resolveUserName(item.Sender.ID)
-		if resolved != item.Sender.ID {
+		// resolveUserName now returns "" when the Contact API lookup is
+		// unavailable (previously it returned the input open_id). Fall
+		// back to the generic "User" label here so the quoted block in
+		// downstream prompts continues to show a sensible string instead
+		// of degrading to the "unknown" tier used for truly source-less
+		// quotes (e.g. missing Sender.ID).
+		if resolved := p.resolveUserName(item.Sender.ID); resolved != "" {
 			senderName = resolved
 		} else {
 			senderName = "User"
