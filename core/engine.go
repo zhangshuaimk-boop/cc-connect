@@ -3297,7 +3297,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		drainEvents(state.agentSession.Events())
 	}
 
-	promptContent := e.buildSenderPrompt(msg.Content, msg.UserID, msg.UserName, msg.Platform, msg.SessionKey, msg.ChannelKey)
+	promptContent := e.buildSenderPrompt(msg.Content, msg.UserID, msg.UserName, msg.SenderType, msg.SenderUnionID, msg.Platform, msg.SessionKey, msg.ChannelKey)
 
 	sendStart := time.Now()
 	state.mu.Lock()
@@ -5198,7 +5198,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					}
 				}
 
-				queuedPrompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
+				queuedPrompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.senderType, queued.senderUnionID, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
 
 				nextSend := make(chan error, 1)
 				go func() {
@@ -5502,7 +5502,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		state.mu.Unlock()
 
 		e.i18n.DetectAndSet(queued.content)
-		prompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
+		prompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.senderType, queued.senderUnionID, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
 
 		if state.agentSession == nil || !state.agentSession.Alive() {
 			e.send(queued.platform, queued.replyCtx, fmt.Sprintf(e.i18n.T(MsgError), "agent session ended"))
@@ -14869,10 +14869,33 @@ func (e *Engine) cmdBindSetup(p Platform, msg *Message) {
 }
 
 // buildSenderPrompt prepends a sender identity header to content when
-// injectSender is enabled and userID is non-empty. When userName is available
-// it is included as sender_name so the agent can identify who sent the message
-// by display name (useful in shared channel sessions with multiple users).
-func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionKey, channelKey string) string {
+// injectSender is enabled and userID is non-empty.
+//
+// Field order is fixed (sender_id, sender_name, sender_type,
+// sender_union_id, platform, chat_id) so downstream consumers can rely on
+// it. Optional fields (sender_name, sender_type, sender_union_id) are
+// omitted entirely when their value is empty — this lets agents
+// distinguish "no signal" (field absent) from "signal present but
+// unrecognized" (field present with value "unknown"). Concretely:
+//
+//   - sender_name is absent when the platform's user-name resolver
+//     failed (e.g. Contact API returned no data); the previous behaviour
+//     of falling back to the open_id is intentionally dropped to avoid
+//     confusing the open_id for a display name.
+//   - sender_type is absent when the platform did not surface a sender
+//     kind (synthesized recall notifications, platforms that do not
+//     classify senders).
+//   - sender_union_id is absent when the platform has no tenant-stable
+//     identity (most platforms) or when the SDK callback did not carry
+//     one (Feishu card-action synthesized messages — Operator has no
+//     union_id field).
+//
+// The relative order of the four pre-existing fields (sender_id,
+// sender_name, platform, chat_id) is preserved; new fields are inserted
+// between sender_name and platform. Agents that parse the header should
+// use a tolerant whitespace+`=` splitter rather than an anchored regex
+// that assumes adjacency between specific old fields.
+func (e *Engine) buildSenderPrompt(content, userID, userName, senderType, senderUnionID, platform, sessionKey, channelKey string) string {
 	if !e.injectSender || userID == "" {
 		return content
 	}
@@ -14880,11 +14903,23 @@ func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionK
 	if chatID == "" {
 		chatID = extractChannelID(sessionKey)
 	}
+	// Pre-size to the maximum possible number of fields (6) so the slice
+	// header allocation is a single sized make instead of growing append.
+	fields := make([]string, 0, 6)
+	fields = append(fields, fmt.Sprintf("sender_id=%s", userID))
 	if userName != "" {
 		safeName := strings.NewReplacer(`"`, `'`, "\n", " ", "\r", "").Replace(userName)
-		return fmt.Sprintf("[cc-connect sender_id=%s sender_name=\"%s\" platform=%s chat_id=%s]\n%s", userID, safeName, platform, chatID, content)
+		fields = append(fields, fmt.Sprintf(`sender_name="%s"`, safeName))
 	}
-	return fmt.Sprintf("[cc-connect sender_id=%s platform=%s chat_id=%s]\n%s", userID, platform, chatID, content)
+	if senderType != "" {
+		fields = append(fields, fmt.Sprintf("sender_type=%s", senderType))
+	}
+	if senderUnionID != "" {
+		fields = append(fields, fmt.Sprintf("sender_union_id=%s", senderUnionID))
+	}
+	fields = append(fields, fmt.Sprintf("platform=%s", platform))
+	fields = append(fields, fmt.Sprintf("chat_id=%s", chatID))
+	return fmt.Sprintf("[cc-connect %s]\n%s", strings.Join(fields, " "), content)
 }
 
 func extractChannelID(sessionKey string) string {

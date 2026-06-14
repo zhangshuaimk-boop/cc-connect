@@ -9607,7 +9607,7 @@ func TestBuildSenderPrompt_Enabled(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hello world", "user123", "Alice", "feishu", "feishu:channel42:user123", "")
+	result := e.buildSenderPrompt("hello world", "user123", "Alice", "", "", "feishu", "feishu:channel42:user123", "")
 	expected := "[cc-connect sender_id=user123 sender_name=\"Alice\" platform=feishu chat_id=channel42]\nhello world"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
@@ -9618,7 +9618,7 @@ func TestBuildSenderPrompt_Disabled(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(false)
 
-	result := e.buildSenderPrompt("hello", "user1", "Alice", "feishu", "feishu:ch:user1", "")
+	result := e.buildSenderPrompt("hello", "user1", "Alice", "", "", "feishu", "feishu:ch:user1", "")
 	if result != "hello" {
 		t.Fatalf("expected raw content when disabled, got %q", result)
 	}
@@ -9628,7 +9628,7 @@ func TestBuildSenderPrompt_EmptyUserID(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hello", "", "Bob", "telegram", "telegram:ch:user1", "")
+	result := e.buildSenderPrompt("hello", "", "Bob", "", "", "telegram", "telegram:ch:user1", "")
 	if result != "hello" {
 		t.Fatalf("expected raw content when userID is empty, got %q", result)
 	}
@@ -9638,7 +9638,7 @@ func TestBuildSenderPrompt_EmptyUserName(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hello", "user1", "", "feishu", "feishu:ch:user1", "")
+	result := e.buildSenderPrompt("hello", "user1", "", "", "", "feishu", "feishu:ch:user1", "")
 	expected := "[cc-connect sender_id=user1 platform=feishu chat_id=ch]\nhello"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
@@ -9649,7 +9649,7 @@ func TestBuildSenderPrompt_NameWithSpaces(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hi", "U999", "Jim Tang", "slack", "slack:C012:U999", "")
+	result := e.buildSenderPrompt("hi", "U999", "Jim Tang", "", "", "slack", "slack:C012:U999", "")
 	expected := "[cc-connect sender_id=U999 sender_name=\"Jim Tang\" platform=slack chat_id=C012]\nhi"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
@@ -9696,7 +9696,7 @@ func TestBuildSenderPrompt_DifferentPlatforms(t *testing.T) {
 		{"slack", "slack:C012345:carol", "C012345"},
 	}
 	for _, tc := range platforms {
-		result := e.buildSenderPrompt("msg", "uid", "TestUser", tc.platform, tc.sessionKey, "")
+		result := e.buildSenderPrompt("msg", "uid", "TestUser", "", "", tc.platform, tc.sessionKey, "")
 		if !strings.Contains(result, "platform="+tc.platform) {
 			t.Errorf("missing platform=%s in %q", tc.platform, result)
 		}
@@ -9710,7 +9710,7 @@ func TestBuildSenderPrompt_SanitizesSpecialChars(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hi", "U1", "Evil\"Name\nInject", "slack", "slack:C1:U1", "")
+	result := e.buildSenderPrompt("hi", "U1", "Evil\"Name\nInject", "", "", "slack", "slack:C1:U1", "")
 	if strings.Contains(result, `"Name`) || strings.Contains(result, "\n"+`Inject`) {
 		t.Fatalf("quotes/newlines should be sanitized, got %q", result)
 	}
@@ -9725,7 +9725,7 @@ func TestBuildSenderPrompt_ChannelKeyOverridesSessionKey(t *testing.T) {
 
 	// When channelKey is provided, it should be used as chat_id instead of
 	// extracting from sessionKey (which would give "g" for dingtalk).
-	result := e.buildSenderPrompt("hello", "staff1", "Alice", "dingtalk", "dingtalk:g:cidXXX:staff1", "cidXXX")
+	result := e.buildSenderPrompt("hello", "staff1", "Alice", "", "", "dingtalk", "dingtalk:g:cidXXX:staff1", "cidXXX")
 	expected := "[cc-connect sender_id=staff1 sender_name=\"Alice\" platform=dingtalk chat_id=cidXXX]\nhello"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
@@ -9738,8 +9738,97 @@ func TestBuildSenderPrompt_FallbackWithoutChannelKey(t *testing.T) {
 
 	// When channelKey is empty, extractChannelID heuristic should detect
 	// the 4-segment format and extract the correct channel.
-	result := e.buildSenderPrompt("hello", "staff1", "Alice", "dingtalk", "dingtalk:g:cidXXX:staff1", "")
+	result := e.buildSenderPrompt("hello", "staff1", "Alice", "", "", "dingtalk", "dingtalk:g:cidXXX:staff1", "")
 	expected := "[cc-connect sender_id=staff1 sender_name=\"Alice\" platform=dingtalk chat_id=cidXXX]\nhello"
+	if result != expected {
+		t.Fatalf("got %q, want %q", result, expected)
+	}
+}
+
+func TestBuildSenderPrompt_IncludesSenderTypeAndUnionID(t *testing.T) {
+	e := newTestEngine()
+	e.SetInjectSender(true)
+
+	// Both new fields populated: header should carry them in the
+	// documented order, between sender_name and platform.
+	result := e.buildSenderPrompt(
+		"hello", "ou_user", "Alice",
+		"user", "on_abc123",
+		"feishu", "feishu:oc_chat:ou_user", "oc_chat",
+	)
+	expected := "[cc-connect sender_id=ou_user sender_name=\"Alice\" sender_type=user sender_union_id=on_abc123 platform=feishu chat_id=oc_chat]\nhello"
+	if result != expected {
+		t.Fatalf("got %q, want %q", result, expected)
+	}
+}
+
+func TestBuildSenderPrompt_BotSenderType(t *testing.T) {
+	e := newTestEngine()
+	e.SetInjectSender(true)
+
+	// Bot sender: a peer cc-connect agent sending into this one's chat.
+	result := e.buildSenderPrompt(
+		"need a review",
+		"ou_peer_bot", "PeerAgent",
+		"bot", "on_peer_union",
+		"feishu", "feishu:oc_chat:ou_peer_bot", "oc_chat",
+	)
+	expected := "[cc-connect sender_id=ou_peer_bot sender_name=\"PeerAgent\" sender_type=bot sender_union_id=on_peer_union platform=feishu chat_id=oc_chat]\nneed a review"
+	if result != expected {
+		t.Fatalf("got %q, want %q", result, expected)
+	}
+}
+
+func TestBuildSenderPrompt_OmitsEmptySenderTypeAndUnionID(t *testing.T) {
+	e := newTestEngine()
+	e.SetInjectSender(true)
+
+	// When senderType and senderUnionID are empty, neither field appears
+	// in the header — preserving the pre-PR format exactly for platforms
+	// that don't surface these signals.
+	result := e.buildSenderPrompt(
+		"hello", "user1", "Alice",
+		"", "",
+		"telegram", "telegram:ch:user1", "",
+	)
+	expected := "[cc-connect sender_id=user1 sender_name=\"Alice\" platform=telegram chat_id=ch]\nhello"
+	if result != expected {
+		t.Fatalf("got %q, want %q", result, expected)
+	}
+}
+
+func TestBuildSenderPrompt_SenderTypeAloneNoUnionID(t *testing.T) {
+	e := newTestEngine()
+	e.SetInjectSender(true)
+
+	// Feishu card-action synthesized messages: SenderType is filled but
+	// the callback Operator does not expose union_id. The header should
+	// carry sender_type and omit sender_union_id.
+	result := e.buildSenderPrompt(
+		"allow", "ou_user", "Alice",
+		"user", "",
+		"feishu", "feishu:oc_chat:ou_user", "oc_chat",
+	)
+	expected := "[cc-connect sender_id=ou_user sender_name=\"Alice\" sender_type=user platform=feishu chat_id=oc_chat]\nallow"
+	if result != expected {
+		t.Fatalf("got %q, want %q", result, expected)
+	}
+}
+
+func TestBuildSenderPrompt_UnknownSenderType(t *testing.T) {
+	e := newTestEngine()
+	e.SetInjectSender(true)
+
+	// "unknown" is the documented escape hatch for unrecognized raw values
+	// (see normalizeSenderType in platform/feishu). It must appear in the
+	// header verbatim so agents can distinguish "signal absent" (empty)
+	// from "signal present but unrecognized" (unknown).
+	result := e.buildSenderPrompt(
+		"hi", "ou_user", "Alice",
+		"unknown", "",
+		"feishu", "feishu:oc_chat:ou_user", "oc_chat",
+	)
+	expected := "[cc-connect sender_id=ou_user sender_name=\"Alice\" sender_type=unknown platform=feishu chat_id=oc_chat]\nhi"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
 	}
