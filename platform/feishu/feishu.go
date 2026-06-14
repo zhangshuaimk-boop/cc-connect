@@ -677,10 +677,15 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 		rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
 		h := p.getHandler()
 		go h(p.dispatchPlatform(), &core.Message{
-			SessionKey:           sessionKey,
-			Platform:             p.platformName,
-			UserID:               userID,
-			UserName:             p.resolveUserName(userID),
+			SessionKey: sessionKey,
+			Platform:   p.platformName,
+			UserID:     userID,
+			UserName:   p.resolveUserName(userID),
+			// Card action callbacks are always triggered by a human tapping
+			// a Feishu card button. The callback Operator struct does not
+			// expose union_id, so SenderUnionID stays empty for this path —
+			// agents that need it can still read sender_id (OpenID).
+			SenderType:           "user",
 			ChatName:             p.resolveChatName(chatID),
 			Content:              responseText,
 			ReplyCtx:             rctx,
@@ -714,6 +719,9 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 			Platform:   p.platformName,
 			UserID:     userID,
 			UserName:   p.resolveUserName(userID),
+			// See the perm: branch above — synthesized from a user tapping a
+			// card option; callback Operator has no union_id.
+			SenderType: "user",
 			ChatName:   p.resolveChatName(chatID),
 			Content:    actionVal,
 			ReplyCtx:   rctx,
@@ -750,6 +758,9 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 			Platform:   p.platformName,
 			UserID:     userID,
 			UserName:   p.resolveUserName(userID),
+			// See the perm: branch above — synthesized from a user tapping a
+			// card button; callback Operator has no union_id.
+			SenderType: "user",
 			ChatName:   p.resolveChatName(chatID),
 			Content:    cmdText,
 			ReplyCtx:   rctx,
@@ -1016,6 +1027,11 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		chatID = *msg.ChatId
 	}
 	userID := userIDFromEvent(sender.SenderId)
+	senderUnionID := unionIDFromEvent(sender.SenderId)
+	senderType := ""
+	if sender.SenderType != nil {
+		senderType = normalizeSenderType(*sender.SenderType)
+	}
 	// userName and chatName are resolved in dispatchMessage to avoid blocking
 	// the SDK dispatcher goroutine with synchronous HTTP calls.
 
@@ -1131,7 +1147,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
 	// correctness before spawning the goroutine.
-	go p.dispatchMessage(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs)
+	go p.dispatchMessage(ctx, msgType, content, mentions, messageID, sessionKey, userID, senderType, senderUnionID, chatID, rctx, parentID, createTimeMs)
 
 	return nil
 }
@@ -1148,7 +1164,7 @@ func (p *Platform) replyUnauthorizedAccess(ctx context.Context, rctx replyContex
 // dispatchMessage handles the message content parsing, media download, and
 // handler invocation. It runs in its own goroutine so that onMessage returns
 // quickly and does not block the SDK event loop.
-func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64) {
+func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, senderType, senderUnionID, chatID string, rctx replyContext, parentID string, createTimeMs int64) {
 	if p.isMessageRecalled(messageID) {
 		slog.Debug(p.tag()+": recalled message ignored in async dispatch", "message_id", messageID)
 		return
@@ -1192,7 +1208,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 		p.dispatchCoreMessage(&core.Message{
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
-			UserID:    userID, UserName: userName, ChatName: chatName,
+			UserID:    userID, UserName: userName, SenderType: senderType, SenderUnionID: senderUnionID, ChatName: chatName,
 			Content: text, ExtraContent: quoted.text, Images: quoted.images, ReplyCtx: rctx,
 			UserMessageTimeMs: createTimeMs,
 		})
@@ -1216,7 +1232,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 		p.dispatchCoreMessage(&core.Message{
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
-			UserID:    userID, UserName: userName, ChatName: chatName,
+			UserID:    userID, UserName: userName, SenderType: senderType, SenderUnionID: senderUnionID, ChatName: chatName,
 			Images:            []core.ImageAttachment{{MimeType: mimeType, Data: imgData}},
 			ReplyCtx:          rctx,
 			UserMessageTimeMs: createTimeMs,
@@ -1243,7 +1259,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 		p.dispatchCoreMessage(&core.Message{
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
-			UserID:    userID, UserName: userName, ChatName: chatName,
+			UserID:    userID, UserName: userName, SenderType: senderType, SenderUnionID: senderUnionID, ChatName: chatName,
 			Audio: &core.AudioAttachment{
 				MimeType: "audio/opus",
 				Data:     audioData,
@@ -1263,7 +1279,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 		p.dispatchCoreMessage(&core.Message{
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
-			UserID:    userID, UserName: userName, ChatName: chatName,
+			UserID:    userID, UserName: userName, SenderType: senderType, SenderUnionID: senderUnionID, ChatName: chatName,
 			Content: text, ExtraContent: quoted.text, Images: append(quoted.images, images...),
 			ReplyCtx:          rctx,
 			UserMessageTimeMs: createTimeMs,
@@ -1292,7 +1308,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 		p.dispatchCoreMessage(&core.Message{
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
-			UserID:    userID, UserName: userName, ChatName: chatName,
+			UserID:    userID, UserName: userName, SenderType: senderType, SenderUnionID: senderUnionID, ChatName: chatName,
 			Files: []core.FileAttachment{{
 				MimeType: mimeType,
 				Data:     fileData,
@@ -1311,7 +1327,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 		coreMsg := &core.Message{
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
-			UserID:    userID, UserName: userName, ChatName: chatName,
+			UserID:    userID, UserName: userName, SenderType: senderType, SenderUnionID: senderUnionID, ChatName: chatName,
 			Content:           text,
 			Images:            images,
 			Files:             files,
@@ -1335,7 +1351,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 			p.dispatchCoreMessage(&core.Message{
 				SessionKey: sessionKey, Platform: p.platformName,
 				MessageID: messageID,
-				UserID:    userID, UserName: userName, ChatName: chatName,
+				UserID:    userID, UserName: userName, SenderType: senderType, SenderUnionID: senderUnionID, ChatName: chatName,
 				Content: "[sticker]", ExtraContent: quoted.text, ReplyCtx: rctx,
 				UserMessageTimeMs: createTimeMs,
 			})
@@ -1344,7 +1360,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 		p.dispatchCoreMessage(&core.Message{
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
-			UserID:    userID, UserName: userName, ChatName: chatName,
+			UserID:    userID, UserName: userName, SenderType: senderType, SenderUnionID: senderUnionID, ChatName: chatName,
 			Images:            []core.ImageAttachment{{MimeType: mimeType, Data: imgData}},
 			ReplyCtx:          rctx,
 			UserMessageTimeMs: createTimeMs,
@@ -1381,7 +1397,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 		p.dispatchCoreMessage(&core.Message{
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
-			UserID:    userID, UserName: userName, ChatName: chatName,
+			UserID:    userID, UserName: userName, SenderType: senderType, SenderUnionID: senderUnionID, ChatName: chatName,
 			Content: text, ExtraContent: quoted.text, Images: images, ReplyCtx: rctx,
 			UserMessageTimeMs: createTimeMs,
 		})
@@ -1431,6 +1447,48 @@ func userIDFromEvent(id *larkim.UserId) string {
 		return *id.UnionId
 	}
 	return ""
+}
+
+// unionIDFromEvent returns the tenant-stable UnionId field from a Feishu
+// UserId, or empty string when the SDK did not populate it. Unlike
+// userIDFromEvent, this does NOT fall back to OpenId/UserId — callers want
+// the union_id specifically (a stable identity that is consistent across
+// different Feishu apps within the same tenant) and an empty result must be
+// propagated as "no union_id available" rather than masked by a different
+// id type.
+func unionIDFromEvent(id *larkim.UserId) string {
+	if id == nil || id.UnionId == nil {
+		return ""
+	}
+	return *id.UnionId
+}
+
+// normalizeSenderType maps the raw EventSender.SenderType value (or any
+// platform-specific sender-kind string) to the cross-platform vocabulary
+// used by core.Message.SenderType.
+//
+//	""        -> ""         no signal — caller did not populate the field;
+//	                        buildSenderPrompt will omit it from the header
+//	"user"    -> "user"     human sender
+//	"bot"     -> "bot"      Feishu event-payload value for an app sender
+//	"app"     -> "bot"      Feishu HTTP IM API value for an app sender
+//	(other)   -> "unknown"  signal present but not recognized; emitted so
+//	                        agents can distinguish "no signal" from
+//	                        "signal present but unrecognized"
+//
+// The SDK comment claiming SenderType is "only user" is outdated — production
+// Feishu deployments do populate "bot" for bot-originated messages.
+func normalizeSenderType(raw string) string {
+	switch raw {
+	case "":
+		return ""
+	case "user":
+		return "user"
+	case "bot", "app":
+		return "bot"
+	default:
+		return "unknown"
+	}
 }
 
 func isValidFeishuLookupID(id string) bool {
@@ -4481,13 +4539,25 @@ func (p *Platform) onBotMenu(event *larkapplication.P2BotMenuV6) error {
 	userName := p.resolveUserName(userID)
 	sessionKey := p.platformName + ":" + userID + ":" + userID
 
+	// Bot menu clicks always originate from a human user. Unlike the card
+	// callback Operator, the bot-menu Operator wraps a structurally-equivalent
+	// *application.UserId (different type from larkim.UserId in the same SDK)
+	// that does expose union_id, so we extract it inline rather than going
+	// through unionIDFromEvent which is typed for the larkim package.
+	senderUnionID := ""
+	if event.Event.Operator != nil && event.Event.Operator.OperatorId != nil && event.Event.Operator.OperatorId.UnionId != nil {
+		senderUnionID = *event.Event.Operator.OperatorId.UnionId
+	}
+
 	p.getHandler()(p.dispatchPlatform(), &core.Message{
-		SessionKey: sessionKey,
-		Platform:   p.platformName,
-		Content:    content,
-		UserID:     userID,
-		UserName:   userName,
-		ReplyCtx:   replyContext{chatID: userID, sessionKey: sessionKey},
+		SessionKey:    sessionKey,
+		Platform:      p.platformName,
+		Content:       content,
+		UserID:        userID,
+		UserName:      userName,
+		SenderType:    "user",
+		SenderUnionID: senderUnionID,
+		ReplyCtx:      replyContext{chatID: userID, sessionKey: sessionKey},
 	})
 	return nil
 }
