@@ -174,7 +174,19 @@ type Message struct {
 	ChannelID    string
 	UserID       string
 	UserName     string
-	ChatName     string // human-readable chat/group name (optional)
+	// SenderType is the platform-normalized sender kind: "user", "bot", or
+	// "unknown" for non-typical values. Empty string means the platform did
+	// not provide this signal — buildSenderPrompt then omits the field rather
+	// than emitting an empty value (so agents can distinguish "no signal" from
+	// "signal present but unrecognized").
+	SenderType string
+	// SenderUnionID is a tenant-stable sender identity that is consistent
+	// across different platform apps within the same tenant. Currently
+	// populated only by Feishu (from EventSender.SenderId.UnionId). Empty for
+	// platforms that don't surface a tenant-stable ID; consumers should treat
+	// absence the same as for SenderType.
+	SenderUnionID string
+	ChatName      string // human-readable chat/group name (optional)
 	Content      string
 	Images       []ImageAttachment   // attached images (if any)
 	Files        []FileAttachment    // attached files (if any)

@@ -308,6 +308,8 @@ type queuedMessage struct {
 	fromVoice         bool
 	userID            string
 	userName          string // sender's display name for sender injection
+	senderType        string // platform-normalized sender kind for sender injection (user/bot/unknown/"")
+	senderUnionID     string // tenant-stable sender identity for sender injection (e.g. Feishu union_id)
 	msgPlatform       string // platform name for sender injection
 	msgSessionKey     string // session key for extracting chat ID
 	channelKey        string // platform-provided channel identifier (preferred over sessionKey extraction)
@@ -2829,6 +2831,8 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 		fromVoice:         msg.FromVoice,
 		userID:            msg.UserID,
 		userName:          msg.UserName,
+		senderType:        msg.SenderType,
+		senderUnionID:     msg.SenderUnionID,
 		msgPlatform:       msg.Platform,
 		msgSessionKey:     msg.SessionKey,
 		channelKey:        msg.ChannelKey,
