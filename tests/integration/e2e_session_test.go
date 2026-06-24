@@ -140,7 +140,7 @@ func (h *e2eHelper) sendAndWait(content string, timeout time.Duration) string {
 	return h.waitReply(timeout)
 }
 
-// countSessions counts the "msgs" markers in /list output (each session line
+// countSessions counts the "msgs" markers in /list output (each session feishu
 // contains "N msgs"), giving us the session count.
 func countSessions(listOutput string) int {
 	return strings.Count(listOutput, "msgs")

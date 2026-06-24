@@ -1,4 +1,4 @@
-package engine_matrix
+package engine_scenario
 
 import (
 	"context"
@@ -17,45 +17,45 @@ type promptRecord struct {
 	prompt    string
 }
 
-type matrixAgent struct {
+type scenarioAgent struct {
 	mu       sync.Mutex
-	sessions []*matrixSession
+	sessions []*scenarioSession
 	list     []core.AgentSessionInfo
 	records  []promptRecord
 }
 
-func newMatrixAgent() *matrixAgent {
-	return &matrixAgent{}
+func newScenarioAgent() *scenarioAgent {
+	return &scenarioAgent{}
 }
 
-func (a *matrixAgent) Name() string { return "matrix-agent" }
+func (a *scenarioAgent) Name() string { return "scenario-agent" }
 
-func (a *matrixAgent) StartSession(_ context.Context, sessionID string) (core.AgentSession, error) {
+func (a *scenarioAgent) StartSession(_ context.Context, sessionID string) (core.AgentSession, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("agent-session-%d", len(a.sessions)+1)
 	}
-	session := &matrixSession{agent: a, id: sessionID, alive: true, events: make(chan core.Event, 32)}
+	session := &scenarioSession{agent: a, id: sessionID, alive: true, events: make(chan core.Event, 32)}
 	a.sessions = append(a.sessions, session)
 	a.list = append(a.list, core.AgentSessionInfo{
 		ID:           sessionID,
-		Summary:      "release matrix session",
+		Summary:      "release scenario session",
 		MessageCount: 1,
 		ModifiedAt:   time.Now(),
 	})
 	return session, nil
 }
 
-func (a *matrixAgent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
+func (a *scenarioAgent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]core.AgentSessionInfo(nil), a.list...), nil
 }
 
-func (a *matrixAgent) Stop() error {
+func (a *scenarioAgent) Stop() error {
 	a.mu.Lock()
-	sessions := append([]*matrixSession(nil), a.sessions...)
+	sessions := append([]*scenarioSession(nil), a.sessions...)
 	a.mu.Unlock()
 	for _, session := range sessions {
 		_ = session.Close()
@@ -63,13 +63,13 @@ func (a *matrixAgent) Stop() error {
 	return nil
 }
 
-func (a *matrixAgent) addRecord(sessionID, prompt string) {
+func (a *scenarioAgent) addRecord(sessionID, prompt string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.records = append(a.records, promptRecord{sessionID: sessionID, prompt: prompt})
 }
 
-func (a *matrixAgent) waitRecords(t *testing.T, n int) []promptRecord {
+func (a *scenarioAgent) waitRecords(t *testing.T, n int) []promptRecord {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -88,22 +88,22 @@ func (a *matrixAgent) waitRecords(t *testing.T, n int) []promptRecord {
 	return nil
 }
 
-func (a *matrixAgent) recordCount() int {
+func (a *scenarioAgent) recordCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return len(a.records)
 }
 
-type matrixSession struct {
+type scenarioSession struct {
 	mu      sync.Mutex
-	agent   *matrixAgent
+	agent   *scenarioAgent
 	id      string
 	alive   bool
 	events  chan core.Event
 	counter int
 }
 
-func (s *matrixSession) Send(prompt string, _ []core.ImageAttachment, _ []core.FileAttachment) error {
+func (s *scenarioSession) Send(prompt string, _ []core.ImageAttachment, _ []core.FileAttachment) error {
 	s.mu.Lock()
 	id := s.id
 	s.counter++
@@ -111,25 +111,25 @@ func (s *matrixSession) Send(prompt string, _ []core.ImageAttachment, _ []core.F
 	s.mu.Unlock()
 
 	s.agent.addRecord(id, prompt)
-	s.events <- core.Event{Type: core.EventResult, Content: "matrix response " + id + " #" + strconv.Itoa(count), Done: true}
+	s.events <- core.Event{Type: core.EventResult, Content: "scenario response " + id + " #" + strconv.Itoa(count), Done: true}
 	return nil
 }
 
-func (s *matrixSession) Events() <-chan core.Event { return s.events }
-func (s *matrixSession) RespondPermission(string, core.PermissionResult) error {
+func (s *scenarioSession) Events() <-chan core.Event { return s.events }
+func (s *scenarioSession) RespondPermission(string, core.PermissionResult) error {
 	return nil
 }
-func (s *matrixSession) CurrentSessionID() string {
+func (s *scenarioSession) CurrentSessionID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.id
 }
-func (s *matrixSession) Alive() bool {
+func (s *scenarioSession) Alive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.alive
 }
-func (s *matrixSession) Close() error {
+func (s *scenarioSession) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.alive {
@@ -140,36 +140,36 @@ func (s *matrixSession) Close() error {
 	return nil
 }
 
-type matrixPlatform struct {
+type scenarioPlatform struct {
 	mu    sync.Mutex
 	texts []string
 }
 
-func (p *matrixPlatform) Name() string { return "matrix" }
-func (p *matrixPlatform) Start(core.MessageHandler) error {
+func (p *scenarioPlatform) Name() string { return "scenario" }
+func (p *scenarioPlatform) Start(core.MessageHandler) error {
 	return nil
 }
-func (p *matrixPlatform) Stop() error { return nil }
-func (p *matrixPlatform) Reply(_ context.Context, replyCtx any, content string) error {
+func (p *scenarioPlatform) Stop() error { return nil }
+func (p *scenarioPlatform) Reply(_ context.Context, replyCtx any, content string) error {
 	return p.Send(context.Background(), replyCtx, content)
 }
-func (p *matrixPlatform) Send(_ context.Context, _ any, content string) error {
+func (p *scenarioPlatform) Send(_ context.Context, _ any, content string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.texts = append(p.texts, content)
 	return nil
 }
-func (p *matrixPlatform) clear() {
+func (p *scenarioPlatform) clear() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.texts = nil
 }
-func (p *matrixPlatform) snapshot() []string {
+func (p *scenarioPlatform) snapshot() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]string(nil), p.texts...)
 }
-func (p *matrixPlatform) waitTextContaining(t *testing.T, substr string) string {
+func (p *scenarioPlatform) waitTextContaining(t *testing.T, substr string) string {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -184,10 +184,10 @@ func (p *matrixPlatform) waitTextContaining(t *testing.T, substr string) string 
 	return ""
 }
 
-func newMatrixEngine(t *testing.T) (*core.Engine, *matrixAgent, *matrixPlatform) {
+func newScenarioEngine(t *testing.T) (*core.Engine, *scenarioAgent, *scenarioPlatform) {
 	t.Helper()
-	agent := newMatrixAgent()
-	platform := &matrixPlatform{}
+	agent := newScenarioAgent()
+	platform := &scenarioPlatform{}
 	engine := core.NewEngine("release-core", agent, []core.Platform{platform}, t.TempDir()+"/sessions.json", core.LangEnglish)
 	t.Cleanup(func() {
 		engine.Stop()
@@ -196,10 +196,10 @@ func newMatrixEngine(t *testing.T) (*core.Engine, *matrixAgent, *matrixPlatform)
 	return engine, agent, platform
 }
 
-func matrixMessage(content string) *core.Message {
+func scenarioMessage(content string) *core.Message {
 	return &core.Message{
-		SessionKey: "matrix:chat-1:user-1",
-		Platform:   "matrix",
+		SessionKey: "scenario:chat-1:user-1",
+		Platform:   "scenario",
 		UserID:     "user-1",
 		UserName:   "Release Tester",
 		ChatName:   "Release Room",
@@ -208,16 +208,16 @@ func matrixMessage(content string) *core.Message {
 	}
 }
 
-func receive(engine *core.Engine, platform *matrixPlatform, content string) {
-	engine.ReceiveMessage(platform, matrixMessage(content))
+func receive(engine *core.Engine, platform *scenarioPlatform, content string) {
+	engine.ReceiveMessage(platform, scenarioMessage(content))
 }
 
 func TestSessionLifecycleCommandsThroughReceiveMessage(t *testing.T) {
-	engine, agent, platform := newMatrixEngine(t)
+	engine, agent, platform := newScenarioEngine(t)
 
 	receive(engine, platform, "first user turn")
 	agent.waitRecords(t, 1)
-	platform.waitTextContaining(t, "matrix response")
+	platform.waitTextContaining(t, "scenario response")
 	platform.clear()
 
 	receive(engine, platform, "/new release-named")
@@ -226,7 +226,7 @@ func TestSessionLifecycleCommandsThroughReceiveMessage(t *testing.T) {
 
 	receive(engine, platform, "second user turn")
 	agent.waitRecords(t, 2)
-	platform.waitTextContaining(t, "matrix response")
+	platform.waitTextContaining(t, "scenario response")
 	platform.clear()
 
 	receive(engine, platform, "/list")
@@ -250,7 +250,7 @@ func TestSessionLifecycleCommandsThroughReceiveMessage(t *testing.T) {
 }
 
 func TestAliasDisabledCommandAndBannedWordsThroughReceiveMessage(t *testing.T) {
-	engine, agent, platform := newMatrixEngine(t)
+	engine, agent, platform := newScenarioEngine(t)
 	engine.AddAlias("帮助", "/whoami")
 
 	receive(engine, platform, "帮助")
@@ -277,7 +277,7 @@ func TestAliasDisabledCommandAndBannedWordsThroughReceiveMessage(t *testing.T) {
 }
 
 func TestCustomPromptCommandThroughReceiveMessage(t *testing.T) {
-	engine, agent, platform := newMatrixEngine(t)
+	engine, agent, platform := newScenarioEngine(t)
 	engine.AddCommand("daily", "Daily summary", "Summarize release status for {{1}}", "", "", "release-test")
 
 	receive(engine, platform, "/daily beta")
@@ -286,11 +286,11 @@ func TestCustomPromptCommandThroughReceiveMessage(t *testing.T) {
 	if !strings.Contains(records[0].prompt, "Summarize release status for beta") {
 		t.Fatalf("custom command prompt = %q", records[0].prompt)
 	}
-	platform.waitTextContaining(t, "matrix response")
+	platform.waitTextContaining(t, "scenario response")
 }
 
 func TestUnknownSlashCommandNotifiesThenFallsThroughToAgent(t *testing.T) {
-	engine, agent, platform := newMatrixEngine(t)
+	engine, agent, platform := newScenarioEngine(t)
 
 	receive(engine, platform, "/not-a-command keep this request")
 

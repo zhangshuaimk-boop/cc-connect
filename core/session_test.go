@@ -592,9 +592,9 @@ func TestParseSessionKey(t *testing.T) {
 			wantUser:     "",
 		},
 		{
-			key:          "telegram:-100123:root:msg456",
-			wantPlatform: "telegram",
-			wantBaseChat: "telegram:-100123",
+			key:          "feishu:-100123:root:msg456",
+			wantPlatform: "feishu",
+			wantBaseChat: "feishu:-100123",
 			wantUser:     "root:msg456",
 		},
 		{
@@ -1117,4 +1117,3 @@ func TestKnownAgentSessionIDs_ResetAllSessionsBug(t *testing.T) {
 		t.Fatalf("filterOwnedSessions returned %d, want 3", len(filtered))
 	}
 }
-

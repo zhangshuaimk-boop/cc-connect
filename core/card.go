@@ -5,9 +5,8 @@ import (
 	"strings"
 )
 
-// Card represents a structured rich message that can be rendered as
-// platform-specific cards (Feishu Interactive Card, Telegram message, etc.)
-// or degraded to plain text for platforms without card support.
+// Card represents a structured rich message that can be rendered as a
+// platform-specific card or degraded to plain text when card support is absent.
 type Card struct {
 	Header   *CardHeader
 	Elements []CardElement

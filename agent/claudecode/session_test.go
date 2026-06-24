@@ -177,7 +177,7 @@ func TestHandleAssistantCapturesPerSubCallUsage(t *testing.T) {
 		"session_id": "test-session",
 		"usage": map[string]any{
 			"input_tokens":                float64(130),
-			"output_tokens":               float64(648),       // real turn total
+			"output_tokens":               float64(648), // real turn total
 			"cache_creation_input_tokens": float64(2_000),
 			"cache_read_input_tokens":     float64(8_000_000), // summed, would inflate ctx
 		},
@@ -412,7 +412,7 @@ func TestShellJoinArgs(t *testing.T) {
 		{"multiple_plain", []string{"--verbose", "--model", "opus"}, "--verbose --model opus"},
 		{"arg_with_space", []string{"--prompt", "hello world"}, "--prompt 'hello world'"},
 		{"arg_with_tab", []string{"a\tb"}, "'a\tb'"},
-		{"arg_with_newline", []string{"line1\nline2"}, "'line1\nline2'"},
+		{"arg_with_newline", []string{"feishu1\nfeishu2"}, "'feishu1\nfeishu2'"},
 		{"arg_with_single_quote", []string{"it's"}, "'it'\\''s'"},
 		{"arg_with_double_quote", []string{`say "hi"`}, `'say "hi"'`},
 		{"arg_with_backslash", []string{`path\to`}, `'path\to'`},
@@ -585,14 +585,13 @@ func makeFiller(n int) string {
 // TestHandleUserEmitsToolResult is a regression test for the bug where
 // claudeSession.handleUser silently dropped tool_result content blocks
 // (only logging when is_error=true) instead of emitting EventToolResult.
-// Without this event, engine never sees tool output and the Feishu/Slack/
-// Discord progress card never renders tool results — only the final
+// Without this event, engine never sees tool output and the Feishu progress card never renders tool results — only the final
 // assistant text reaches the user.
 //
 // Cases covered:
-//  - string content (plain text result)
-//  - array content (Anthropic SDK multi-block: [{type:"text", text:"..."}])
-//  - is_error=true (exit code 1, success=false)
+//   - string content (plain text result)
+//   - array content (Anthropic SDK multi-block: [{type:"text", text:"..."}])
+//   - is_error=true (exit code 1, success=false)
 func TestHandleUserEmitsToolResult(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -608,10 +607,10 @@ func TestHandleUserEmitsToolResult(t *testing.T) {
 				"message": map[string]any{
 					"content": []any{
 						map[string]any{
-							"type":          "tool_result",
-							"tool_use_id":   "toolu_abc",
-							"is_error":      false,
-							"content":       "command output here",
+							"type":        "tool_result",
+							"tool_use_id": "toolu_abc",
+							"is_error":    false,
+							"content":     "command output here",
 						},
 					},
 				},
@@ -631,14 +630,14 @@ func TestHandleUserEmitsToolResult(t *testing.T) {
 							"tool_use_id": "toolu_def",
 							"is_error":    false,
 							"content": []any{
-								map[string]any{"type": "text", "text": "line one"},
-								map[string]any{"type": "text", "text": "line two"},
+								map[string]any{"type": "text", "text": "feishu one"},
+								map[string]any{"type": "text", "text": "feishu two"},
 							},
 						},
 					},
 				},
 			},
-			wantResult:  "line one\nline two",
+			wantResult:  "feishu one\nfeishu two",
 			wantCode:    0,
 			wantSuccess: true,
 		},

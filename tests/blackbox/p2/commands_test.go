@@ -4,7 +4,9 @@
 // release but failures must be recorded.
 //
 // This file covers engine-dispatched slash commands:
-//   /whoami, /agent-sid, /skills, /cron list, /quiet, /effort, /search
+//
+//	/whoami, /agent-sid, /skills, /cron list, /quiet, /effort, /search
+//
 // and security guard: non-authorized user rejection.
 //
 // Run:
@@ -153,7 +155,7 @@ func TestP2_46_Search_ClaudeCode(t *testing.T) {
 // here — this is a configuration-level feature. Marking as informational.
 func TestP2_61_AllowFromDocumented(t *testing.T) {
 	t.Log("P2-61 (allow_from): requires platform-level allow_from config.")
-	t.Log("Verified manually via IM with non-whitelisted Telegram user ID.")
+	t.Log("Verified manually via IM with non-whitelisted Feishu user ID.")
 	t.Log("Cannot automate without modifying engine config per-test.")
 	// Not a failure — documenting the gap.
 }

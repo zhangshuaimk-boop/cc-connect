@@ -114,7 +114,6 @@ func TestMutePlatform_DiscardMessages(t *testing.T) {
 	}
 }
 
-
 func TestCronJob_MuteField(t *testing.T) {
 	job := &CronJob{ID: "m1", Mute: false}
 	if job.Mute {
@@ -377,7 +376,7 @@ func TestCronScheduler_RunJobNow_DisabledJobStillRuns(t *testing.T) {
 	scheduler := NewCronScheduler(store)
 
 	platform := &stubCronReplyTargetPlatform{
-		stubPlatformEngine: stubPlatformEngine{n: "discord"},
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 	}
 	agentSession := newResultAgentSession("manual run complete")
 	agent := &resultAgent{session: agentSession}
@@ -390,7 +389,7 @@ func TestCronScheduler_RunJobNow_DisabledJobStillRuns(t *testing.T) {
 	job := &CronJob{
 		ID:          "manual1",
 		Project:     "test",
-		SessionKey:  "discord:channel-1:user-1",
+		SessionKey:  "feishu:channel-1:user-1",
 		CronExpr:    "0 6 * * *",
 		Prompt:      "summarize activity",
 		Description: "Disabled daily summary",
@@ -457,7 +456,7 @@ func TestCronScheduler_RunJobNow_ProjectMissingFailsSynchronously(t *testing.T) 
 	job := &CronJob{
 		ID:         "missing-project",
 		Project:    "ghost",
-		SessionKey: "discord:channel-1:user-1",
+		SessionKey: "feishu:channel-1:user-1",
 		CronExpr:   "0 6 * * *",
 		Prompt:     "hello",
 		Enabled:    true,
@@ -482,7 +481,7 @@ func TestCronScheduler_RunJobNow_UsesSnapshot(t *testing.T) {
 	scheduler := NewCronScheduler(store)
 
 	platform := &stubCronReplyTargetPlatform{
-		stubPlatformEngine: stubPlatformEngine{n: "discord"},
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 	}
 	agentSession := newResultAgentSession("snapshot complete")
 	agent := &resultAgent{session: agentSession}
@@ -495,7 +494,7 @@ func TestCronScheduler_RunJobNow_UsesSnapshot(t *testing.T) {
 	job := &CronJob{
 		ID:          "snapshot1",
 		Project:     "test",
-		SessionKey:  "discord:channel-1:user-1",
+		SessionKey:  "feishu:channel-1:user-1",
 		CronExpr:    "0 6 * * *",
 		Prompt:      "original prompt",
 		Description: "Original description",

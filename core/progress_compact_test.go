@@ -236,7 +236,7 @@ func (p *stubThrottledProgressPlatform) ProgressUpdateInterval() time.Duration {
 func TestCompactProgressWriter_ThrottlesRapidUpdates(t *testing.T) {
 	p := &stubThrottledProgressPlatform{
 		stubCompactProgressPlatform: stubCompactProgressPlatform{
-			stubPlatformEngine: stubPlatformEngine{n: "discord"},
+			stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 			style:              "card",
 			supportPayload:     true,
 		},

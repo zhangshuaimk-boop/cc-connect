@@ -1,4 +1,4 @@
-package config_matrix
+package config_scenario
 
 import (
 	"os"
@@ -124,7 +124,7 @@ func TestReleaseConfig_BehaviorControlSwitchesParseFromLoadedConfig(t *testing.T
 	path := writeConfig(t, `
 [stream_preview]
 enabled = false
-disabled_platforms = ["feishu", "telegram"]
+disabled_platforms = ["feishu", "feishu"]
 interval_ms = 250
 min_delta_chars = 12
 max_chars = 777
@@ -158,7 +158,7 @@ app_secret = "secret"
 	if cfg.StreamPreview.Enabled == nil || *cfg.StreamPreview.Enabled {
 		t.Fatalf("stream_preview.enabled = %#v, want false", cfg.StreamPreview.Enabled)
 	}
-	if got := strings.Join(cfg.StreamPreview.DisabledPlatforms, ","); got != "feishu,telegram" {
+	if got := strings.Join(cfg.StreamPreview.DisabledPlatforms, ","); got != "feishu,feishu" {
 		t.Fatalf("stream_preview.disabled_platforms = %#v", cfg.StreamPreview.DisabledPlatforms)
 	}
 	if cfg.StreamPreview.IntervalMs == nil || *cfg.StreamPreview.IntervalMs != 250 {

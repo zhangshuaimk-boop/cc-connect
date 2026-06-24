@@ -13,7 +13,7 @@ import (
 
 func TestSkillRegistryListAll_FindsDepth1Skills(t *testing.T) {
 	root := t.TempDir()
-	writeSkillFile(t, filepath.Join(root, "telegram-codex-bot", "SKILL.md"), "Telegram bot skill")
+	writeSkillFile(t, filepath.Join(root, "feishu-codex-bot", "SKILL.md"), "Feishu bot skill")
 	writeSkillFile(t, filepath.Join(root, "doc", "SKILL.md"), "Doc skill")
 	writeSkillFile(t, filepath.Join(root, "skill-installer", "SKILL.md"), "System skill")
 
@@ -25,8 +25,8 @@ func TestSkillRegistryListAll_FindsDepth1Skills(t *testing.T) {
 	if len(skills) != 3 {
 		t.Fatalf("skills discovered = %d, want 3", len(skills))
 	}
-	if r.Resolve("telegram-codex-bot") == nil {
-		t.Fatalf("expected telegram-codex-bot to resolve")
+	if r.Resolve("feishu-codex-bot") == nil {
+		t.Fatalf("expected feishu-codex-bot to resolve")
 	}
 	if r.Resolve("doc") == nil {
 		t.Fatalf("expected doc to resolve")
@@ -42,7 +42,7 @@ func TestSkillRegistryListAll_IgnoresNestedSkillFiles(t *testing.T) {
 	writeSkillFile(t, filepath.Join(root, "frontend-design", "SKILL.md"), "Frontend design skill")
 	// Nested SKILL.md files inside the skill — should NOT be registered.
 	// This is the exact layout from issue #1304 that leaked 101 phantom
-	// slash commands into Discord's command menu.
+	// slash commands into Feishu's command menu.
 	writeSkillFile(t, filepath.Join(root, "frontend-design", "references", "finance-report", "SKILL.md"), "Finance report template")
 	writeSkillFile(t, filepath.Join(root, "frontend-design", "references", "html-ppt-knowledge-arch-blueprint", "SKILL.md"), "PPT knowledge template")
 	// Nested SKILL.md at arbitrary depth — also ignored.
@@ -104,12 +104,12 @@ func TestSkillRegistryListAll_FollowsDirectorySymlinks(t *testing.T) {
 	}
 	root := t.TempDir()
 	targetRoot := t.TempDir()
-	writeSkillFile(t, filepath.Join(targetRoot, "telegram-codex-bot", "SKILL.md"), "Telegram bot skill")
+	writeSkillFile(t, filepath.Join(targetRoot, "feishu-codex-bot", "SKILL.md"), "Feishu bot skill")
 	writeSkillFile(t, filepath.Join(targetRoot, "hf-papers", "SKILL.md"), "HF papers skill")
 
 	// Symlink each individual skill directory at depth-1.
-	if err := os.Symlink(filepath.Join(targetRoot, "telegram-codex-bot"), filepath.Join(root, "telegram-codex-bot")); err != nil {
-		t.Fatalf("symlink telegram-codex-bot: %v", err)
+	if err := os.Symlink(filepath.Join(targetRoot, "feishu-codex-bot"), filepath.Join(root, "feishu-codex-bot")); err != nil {
+		t.Fatalf("symlink feishu-codex-bot: %v", err)
 	}
 	if err := os.Symlink(filepath.Join(targetRoot, "hf-papers"), filepath.Join(root, "hf-papers")); err != nil {
 		t.Fatalf("symlink hf-papers: %v", err)
@@ -123,7 +123,7 @@ func TestSkillRegistryListAll_FollowsDirectorySymlinks(t *testing.T) {
 	if len(skills) != 2 {
 		t.Fatalf("skills discovered = %d, want 2", len(skills))
 	}
-	if r.Resolve("telegram-codex-bot") == nil {
+	if r.Resolve("feishu-codex-bot") == nil {
 		t.Fatalf("expected symlinked depth-1 skill to resolve")
 	}
 	if r.Resolve("hf-papers") == nil {
@@ -136,7 +136,7 @@ func TestSkillRegistryListAll_DoesNotLoopOnDirectorySymlinks(t *testing.T) {
 		t.Skip("symlink creation requires administrator on Windows")
 	}
 	root := t.TempDir()
-	writeSkillFile(t, filepath.Join(root, "telegram-codex-bot", "SKILL.md"), "Telegram bot skill")
+	writeSkillFile(t, filepath.Join(root, "feishu-codex-bot", "SKILL.md"), "Feishu bot skill")
 	// Self-referential depth-1 symlink: `self-loop` points back at itself.
 	// Discovery must not hang (no recursion past depth-1, so this is the
 	// natural safety — but we still verify the registry returns and the
@@ -153,7 +153,7 @@ func TestSkillRegistryListAll_DoesNotLoopOnDirectorySymlinks(t *testing.T) {
 	if len(skills) != 1 {
 		t.Fatalf("skills discovered = %d, want 1", len(skills))
 	}
-	if r.Resolve("telegram-codex-bot") == nil {
+	if r.Resolve("feishu-codex-bot") == nil {
 		t.Fatalf("expected legitimate skill to still resolve alongside symlink loop")
 	}
 }

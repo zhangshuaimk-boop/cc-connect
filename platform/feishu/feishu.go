@@ -6275,10 +6275,9 @@ func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markd
 				continue
 			}
 			footerElements = append(footerElements, map[string]any{
-				"tag":        "markdown",
-				"content":    sanitizeCardMarkdownForCard(line),
-				"text_size":  "notation",
-
+				"tag":       "markdown",
+				"content":   sanitizeCardMarkdownForCard(line),
+				"text_size": "notation",
 			})
 		}
 	}

@@ -8,7 +8,7 @@ import (
 func TestWorkspaceBindingManager_SaveLoad(t *testing.T) {
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "bindings.json")
-	channelKey := workspaceChannelKey("slack", "C123")
+	channelKey := workspaceChannelKey("feishu", "C123")
 
 	mgr := NewWorkspaceBindingManager(storePath)
 	mgr.Bind("project:claude", channelKey, "my-channel", "/home/user/workspace/my-channel")
@@ -38,7 +38,7 @@ func TestWorkspaceBindingManager_SaveLoad(t *testing.T) {
 func TestWorkspaceBindingManager_Unbind(t *testing.T) {
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "bindings.json")
-	channelKey := workspaceChannelKey("slack", "C123")
+	channelKey := workspaceChannelKey("feishu", "C123")
 
 	mgr := NewWorkspaceBindingManager(storePath)
 	mgr.Bind("project:claude", channelKey, "chan", "/path")
@@ -52,9 +52,9 @@ func TestWorkspaceBindingManager_Unbind(t *testing.T) {
 func TestWorkspaceBindingManager_ListByProject(t *testing.T) {
 	dir := t.TempDir()
 	mgr := NewWorkspaceBindingManager(filepath.Join(dir, "bindings.json"))
-	mgr.Bind("project:claude", workspaceChannelKey("slack", "C1"), "chan1", "/path1")
-	mgr.Bind("project:claude", workspaceChannelKey("slack", "C2"), "chan2", "/path2")
-	mgr.Bind("project:other", workspaceChannelKey("slack", "C3"), "chan3", "/path3")
+	mgr.Bind("project:claude", workspaceChannelKey("feishu", "C1"), "chan1", "/path1")
+	mgr.Bind("project:claude", workspaceChannelKey("feishu", "C2"), "chan2", "/path2")
+	mgr.Bind("project:other", workspaceChannelKey("feishu", "C3"), "chan3", "/path3")
 
 	list := mgr.ListByProject("project:claude")
 	if len(list) != 2 {
@@ -65,7 +65,7 @@ func TestWorkspaceBindingManager_ListByProject(t *testing.T) {
 func TestWorkspaceBindingManager_LookupEffective(t *testing.T) {
 	dir := t.TempDir()
 	mgr := NewWorkspaceBindingManager(filepath.Join(dir, "bindings.json"))
-	channelKey := workspaceChannelKey("slack", "C1")
+	channelKey := workspaceChannelKey("feishu", "C1")
 
 	mgr.Bind(sharedWorkspaceBindingsKey, channelKey, "shared-chan", "/shared")
 	mgr.Bind("project:claude", channelKey, "local-chan", "/local")
@@ -86,7 +86,7 @@ func TestWorkspaceBindingManager_LookupEffective(t *testing.T) {
 func TestWorkspaceBindingManager_LoadSharedFromDisk(t *testing.T) {
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "bindings.json")
-	channelKey := workspaceChannelKey("slack", "C1")
+	channelKey := workspaceChannelKey("feishu", "C1")
 
 	mgr := NewWorkspaceBindingManager(storePath)
 	mgr.Bind(sharedWorkspaceBindingsKey, channelKey, "shared-chan", "/shared")
@@ -100,7 +100,7 @@ func TestWorkspaceBindingManager_LoadSharedFromDisk(t *testing.T) {
 func TestWorkspaceBindingManager_RefreshesExternalChanges(t *testing.T) {
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "bindings.json")
-	channelKey := workspaceChannelKey("slack", "C1")
+	channelKey := workspaceChannelKey("feishu", "C1")
 
 	mgrA := NewWorkspaceBindingManager(storePath)
 	mgrB := NewWorkspaceBindingManager(storePath)
@@ -130,7 +130,7 @@ func TestWorkspaceBindingManager_LegacyFallbackForScopedLookup(t *testing.T) {
 
 	mgr.Bind(sharedWorkspaceBindingsKey, "C1", "legacy-chan", "/shared")
 
-	if b, key := mgr.LookupEffective("project:other", workspaceChannelKey("slack", "C1")); b == nil || key != sharedWorkspaceBindingsKey || b.Workspace != "/shared" {
+	if b, key := mgr.LookupEffective("project:other", workspaceChannelKey("feishu", "C1")); b == nil || key != sharedWorkspaceBindingsKey || b.Workspace != "/shared" {
 		t.Fatalf("expected legacy shared binding to be found by scoped lookup, got binding=%v key=%q", b, key)
 	}
 }
@@ -140,9 +140,9 @@ func TestWorkspaceBindingManager_UnbindScopedRemovesLegacyBinding(t *testing.T) 
 	mgr := NewWorkspaceBindingManager(filepath.Join(dir, "bindings.json"))
 
 	mgr.Bind("project:claude", "C1", "legacy-chan", "/shared")
-	mgr.Unbind("project:claude", workspaceChannelKey("slack", "C1"))
+	mgr.Unbind("project:claude", workspaceChannelKey("feishu", "C1"))
 
-	if b := mgr.Lookup("project:claude", workspaceChannelKey("slack", "C1")); b != nil {
+	if b := mgr.Lookup("project:claude", workspaceChannelKey("feishu", "C1")); b != nil {
 		t.Fatalf("expected scoped unbind to remove legacy binding, got %+v", b)
 	}
 	if b := mgr.Lookup("project:claude", "C1"); b != nil {

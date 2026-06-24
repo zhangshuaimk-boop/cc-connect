@@ -319,7 +319,7 @@ func TestP2_80_StreamPreviewDisabled_ClaudeCode(t *testing.T) {
 // TestP2_86_HideReplyFooter verifies that with reply_footer=false, the
 // footer information does not appear in final replies.
 // When reply_footer is false AND show_context_indicator is false, the
-// assistant reply should have no trailing metadata line.
+// assistant reply should have no trailing metadata feishu.
 func TestP2_86_HideReplyFooter_ClaudeCode(t *testing.T) {
 	t.Parallel()
 	env := helper.NewEnvWithSetup(t, "claudecode", func(e *core.Engine) {
@@ -332,13 +332,13 @@ func TestP2_86_HideReplyFooter_ClaudeCode(t *testing.T) {
 	for _, msg := range msgs {
 		text := msg.Text()
 		// Footer would contain model name or work dir info.
-		// With both disabled, last line should not look like a footer.
-		lines := strings.Split(strings.TrimSpace(text), "\n")
-		if len(lines) > 0 {
-			lastLine := strings.TrimSpace(lines[len(lines)-1])
+		// With both disabled, last feishu should not look like a footer.
+		feishus := strings.Split(strings.TrimSpace(text), "\n")
+		if len(feishus) > 0 {
+			lastLine := strings.TrimSpace(feishus[len(feishus)-1])
 			// Footer typically contains: "model · /path/to/dir" or "[ctx: ~N%]"
 			if strings.Contains(lastLine, "[ctx:") {
-				t.Errorf("P2-86: [ctx:] appeared with show_context_indicator=false\nlast line: %q", lastLine)
+				t.Errorf("P2-86: [ctx:] appeared with show_context_indicator=false\nlast feishu: %q", lastLine)
 			}
 		}
 	}

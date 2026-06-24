@@ -500,7 +500,7 @@ func TestHandleRelay_SingleWorkspaceUsesGlobalAgentAndSourceSessionKey(t *testin
 	agent := &sessionEnvRecordingAgent{session: newResultAgentSession("global")}
 	e.agent = agent
 
-	sourceSessionKey := "discord:C1:U1"
+	sourceSessionKey := "feishu:C1:U1"
 	resp, err := e.HandleRelay(context.Background(), "source", sourceSessionKey, "hello")
 	if err != nil {
 		t.Fatalf("HandleRelay() error = %v", err)
@@ -511,7 +511,7 @@ func TestHandleRelay_SingleWorkspaceUsesGlobalAgentAndSourceSessionKey(t *testin
 	if got := agent.EnvValue("CC_SESSION_KEY"); got != sourceSessionKey {
 		t.Fatalf("CC_SESSION_KEY = %q, want %q", got, sourceSessionKey)
 	}
-	if got := e.sessions.ActiveSessionID("relay:source:discord:C1"); got == "" {
+	if got := e.sessions.ActiveSessionID("relay:source:feishu:C1"); got == "" {
 		t.Fatal("expected relay session to be stored under platform-qualified relay key")
 	}
 }

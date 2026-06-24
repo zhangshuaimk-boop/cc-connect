@@ -563,7 +563,7 @@ func TestMgmt_CronExecByID(t *testing.T) {
 	mgmt.SetCronScheduler(cs)
 
 	platform := &stubCronReplyTargetPlatform{
-		stubPlatformEngine: stubPlatformEngine{n: "discord"},
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 	}
 	agentSession := newResultAgentSession("triggered from management")
 	e.platforms = []Platform{platform}
@@ -574,7 +574,7 @@ func TestMgmt_CronExecByID(t *testing.T) {
 	job := &CronJob{
 		ID:          "cron-run-1",
 		Project:     "test-project",
-		SessionKey:  "discord:channel-1:user-1",
+		SessionKey:  "feishu:channel-1:user-1",
 		CronExpr:    "0 9 * * *",
 		Prompt:      "hello",
 		Description: "Run me now",
@@ -615,7 +615,7 @@ func TestMgmt_CronExecByID(t *testing.T) {
 	aliasJob := &CronJob{
 		ID:          "cron-run-alias-1",
 		Project:     "test-project",
-		SessionKey:  "discord:channel-2:user-2",
+		SessionKey:  "feishu:channel-2:user-2",
 		CronExpr:    "0 9 * * *",
 		Prompt:      "hello alias",
 		Description: "Run alias now",
@@ -655,7 +655,7 @@ func TestMgmt_CronExecByID_RejectsExtraPathSegments(t *testing.T) {
 	job := &CronJob{
 		ID:         "cron-run-extra",
 		Project:    "test-project",
-		SessionKey: "discord:channel-1:user-1",
+		SessionKey: "feishu:channel-1:user-1",
 		CronExpr:   "0 9 * * *",
 		Prompt:     "hello",
 		Enabled:    true,
@@ -687,7 +687,7 @@ func TestMgmt_CronExecByID_ProjectMissingIsBadRequest(t *testing.T) {
 	job := &CronJob{
 		ID:         "cron-run-missing-project",
 		Project:    "ghost",
-		SessionKey: "discord:channel-1:user-1",
+		SessionKey: "feishu:channel-1:user-1",
 		CronExpr:   "0 9 * * *",
 		Prompt:     "hello",
 		Enabled:    true,
@@ -1049,7 +1049,7 @@ func TestMgmt_AddPlatformToNewProject_DoesNotRequireEngine(t *testing.T) {
 
 	// "brand-new-project" has no engine registered — this must NOT return 404.
 	r := mgmtPost(t, ts.URL+"/api/v1/projects/brand-new-project/add-platform", "tok", map[string]any{
-		"type":    "dingtalk",
+		"type":    "feishu",
 		"options": map[string]any{"client_id": "abc", "client_secret": "def"},
 	})
 	if !r.OK {
@@ -1058,8 +1058,8 @@ func TestMgmt_AddPlatformToNewProject_DoesNotRequireEngine(t *testing.T) {
 	if savedProject != "brand-new-project" {
 		t.Fatalf("saved project = %q, want brand-new-project", savedProject)
 	}
-	if savedPlatType != "dingtalk" {
-		t.Fatalf("saved platform type = %q, want dingtalk", savedPlatType)
+	if savedPlatType != "feishu" {
+		t.Fatalf("saved platform type = %q, want feishu", savedPlatType)
 	}
 }
 
@@ -2812,4 +2812,3 @@ func TestMgmt_CCSwitchProviders_MethodNotAllowed(t *testing.T) {
 		t.Fatal("expected DELETE on cc-switch to fail")
 	}
 }
-

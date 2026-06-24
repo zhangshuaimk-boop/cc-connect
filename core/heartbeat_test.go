@@ -58,7 +58,7 @@ func TestHeartbeatScheduler_RegisterDefaults(t *testing.T) {
 	hs := NewHeartbeatScheduler("")
 	hs.Register("test", HeartbeatConfig{
 		Enabled:    true,
-		SessionKey: "telegram:123:123",
+		SessionKey: "feishu:123:123",
 	}, nil, "/tmp/test")
 
 	if len(hs.entries) != 1 {

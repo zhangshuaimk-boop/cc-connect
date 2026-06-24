@@ -111,7 +111,7 @@ func TestConfigValidate(t *testing.T) {
 						p := validProject("demo")
 						p.References = ReferenceConfig{
 							NormalizeAgents: []string{"codex", "claudecode"},
-							RenderPlatforms: []string{"feishu", "weixin"},
+							RenderPlatforms: []string{"feishu"},
 							DisplayPath:     "dirname_basename",
 							MarkerStyle:     "emoji",
 							EnclosureStyle:  "code",
@@ -140,12 +140,12 @@ func TestConfigValidate(t *testing.T) {
 				Projects: []ProjectConfig{
 					func() ProjectConfig {
 						p := validProject("demo")
-						p.References.RenderPlatforms = []string{"telegram"}
+						p.References.RenderPlatforms = []string{"unsupported-platform"}
 						return p
 					}(),
 				},
 			},
-			wantErr: `projects[0].references.render_platforms has unsupported value "telegram"`,
+			wantErr: `projects[0].references.render_platforms has unsupported value "unsupported-platform"`,
 		},
 		{
 			name: "rejects unsupported reference display path",
@@ -547,7 +547,7 @@ func TestLoad_ResolvesEnvPlaceholders(t *testing.T) {
 
 	root := t.TempDir()
 	t.Setenv("CC_ROOT", root)
-	t.Setenv("TG_TOKEN", "tg-secret")
+	t.Setenv("FEISHU_APP_ID", "cli_test_app")
 	t.Setenv("HOOK_TOKEN", "hook-secret")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7890")
@@ -578,10 +578,10 @@ func TestLoad_ResolvesEnvPlaceholders(t *testing.T) {
  HTTP_PROXY = "${HTTP_PROXY}"
 
  [[projects.platforms]]
- type = "telegram"
+ type = "feishu"
 
  [projects.platforms.options]
- token = "${TG_TOKEN}"
+ app_id = "${FEISHU_APP_ID}"
  chat_id = 12345
  `)
 
@@ -608,8 +608,8 @@ func TestLoad_ResolvesEnvPlaceholders(t *testing.T) {
 	if got := cfg.Projects[0].Agent.Providers[0].Env["HTTP_PROXY"]; got != "http://127.0.0.1:7890" {
 		t.Fatalf("provider env HTTP_PROXY = %q, want http://127.0.0.1:7890", got)
 	}
-	if got := stringMapValue(cfg.Projects[0].Platforms[0].Options, "token"); got != "tg-secret" {
-		t.Fatalf("platform token = %q, want tg-secret", got)
+	if got := stringMapValue(cfg.Projects[0].Platforms[0].Options, "app_id"); got != "cli_test_app" {
+		t.Fatalf("platform app_id = %q, want cli_test_app", got)
 	}
 	if _, ok := cfg.Projects[0].Platforms[0].Options["chat_id"].(int64); !ok {
 		t.Fatalf("chat_id type = %T, want int64", cfg.Projects[0].Platforms[0].Options["chat_id"])
@@ -637,7 +637,7 @@ func TestLoad_MissingEnvPlaceholderBecomesEmptyString(t *testing.T) {
  HTTPS_PROXY = "${MISSING_PROXY}"
 
  [[projects.platforms]]
- type = "telegram"
+ type = "feishu"
 
  [projects.platforms.options]
  token = "prefix-${MISSING_TOKEN}-suffix"
@@ -655,7 +655,7 @@ func TestLoad_MissingEnvPlaceholderBecomesEmptyString(t *testing.T) {
 		t.Fatalf("provider env HTTPS_PROXY = %q, want empty", got)
 	}
 	if got := stringMapValue(cfg.Projects[0].Platforms[0].Options, "token"); got != "prefix--suffix" {
-		t.Fatalf("platform token = %q, want prefix--suffix", got)
+		t.Fatalf("platform app_id = %q, want prefix--suffix", got)
 	}
 	if _, ok := cfg.Projects[0].Agent.Options["retries"].(int64); !ok {
 		t.Fatalf("retries type = %T, want int64", cfg.Projects[0].Agent.Options["retries"])
@@ -793,7 +793,7 @@ name = "backup"
 api_key = "sk-backup"
 
 [[projects.platforms]]
-type = "telegram"
+type = "external-placeholder"
 
 [projects.platforms.options]
 token = "test-token"
@@ -1097,7 +1097,7 @@ type = "codex"
 provider = "openai"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "alpha-token"
@@ -1162,7 +1162,7 @@ type = "codex"
 provider_refs = ["shared-openai"]
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "demo-token"
@@ -1308,10 +1308,10 @@ type = "codex"
 work_dir = "/tmp/alpha"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+token = "token_xxx"
 `
 
 const relayConfigFixture = `
@@ -1329,10 +1329,10 @@ type = "codex"
 work_dir = "/tmp/alpha"
 
 [[projects.platforms]]
-type = "telegram"
+type = "external-placeholder"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+token = "token_xxx"
 `
 
 const relayConfigNegativeFixture = `
@@ -1349,10 +1349,11 @@ type = "codex"
 work_dir = "/tmp/alpha"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const relayConfigInvalidVisibilityFixture = `
@@ -1369,10 +1370,11 @@ type = "codex"
 work_dir = "/tmp/alpha"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 func TestSaveFeishuPlatformCredentials_UpdateFirstCandidateAndAllowFrom(t *testing.T) {
@@ -1802,7 +1804,7 @@ type = "codex"
 work_dir = "/tmp/beta"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "test"
@@ -1831,7 +1833,7 @@ type = "codex"
 work_dir = "/tmp/gamma"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "test"
@@ -1855,7 +1857,7 @@ func validProject(name string) ProjectConfig {
 			Options: map[string]any{"mode": "default"},
 		},
 		Platforms: []PlatformConfig{
-			{Type: "telegram", Options: map[string]any{"token": "test-token"}},
+			{Type: "feishu", Options: map[string]any{"token": "test-token"}},
 		},
 	}
 }
@@ -1996,7 +1998,7 @@ type = "claudecode"
 mode = "default"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "test-token"
@@ -2022,7 +2024,7 @@ name = "backup"
 api_key = "sk-backup"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "test-token"
@@ -2039,10 +2041,10 @@ type = "codex"
 work_dir = "/tmp/alpha"
 
 [[projects.platforms]]
-type = "telegram"
+type = "external-placeholder"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+token = "token_xxx"
 
 [[projects.platforms]]
 type = "feishu"
@@ -2071,10 +2073,10 @@ type = "codex"
 work_dir = "/tmp/beta"
 
 [[projects.platforms]]
-type = "telegram"
+type = "external-placeholder"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+token = "token_xxx"
 `
 
 const projectWithResetOnIdleFixture = `
@@ -2089,10 +2091,11 @@ type = "codex"
 work_dir = "/tmp/beta"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const projectWithNegativeResetOnIdleFixture = `
@@ -2107,10 +2110,11 @@ type = "codex"
 work_dir = "/tmp/beta"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const projectWithRunAsUserFixture = `
@@ -2126,11 +2130,11 @@ type = "claudecode"
 work_dir = "/tmp/sandboxed"
 
 [[projects.platforms]]
-type = "slack"
+type = "feishu"
 
 [projects.platforms.options]
-app_token = "xapp-token"
-bot_token = "xoxb-token"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const projectWithRunAsUserRootFixture = `
@@ -2145,11 +2149,11 @@ type = "claudecode"
 work_dir = "/tmp/bad"
 
 [[projects.platforms]]
-type = "slack"
+type = "feishu"
 
 [projects.platforms.options]
-app_token = "xapp-token"
-bot_token = "xoxb-token"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const projectWithRunAsUserInvalidFixture = `
@@ -2164,29 +2168,11 @@ type = "claudecode"
 work_dir = "/tmp/bad"
 
 [[projects.platforms]]
-type = "slack"
+type = "feishu"
 
 [projects.platforms.options]
-app_token = "xapp-token"
-bot_token = "xoxb-token"
-`
-
-const weixinConfigFixture = `
-[[projects]]
-name = "alpha"
-
-[projects.agent]
-type = "codex"
-
-[projects.agent.options]
-work_dir = "/tmp/alpha"
-
-[[projects.platforms]]
-type = "weixin"
-
-[projects.platforms.options]
-token = "old_weixin_token"
-base_url = "https://ilink.example"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const preserveFormatFixture = `# top comment should stay
@@ -2224,7 +2210,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users:     nil,
 				}},
 			},
@@ -2236,7 +2222,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users:     &UsersConfig{Roles: map[string]RoleConfig{}},
 				}},
 			},
@@ -2248,7 +2234,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						Roles: map[string]RoleConfig{
 							"admin": {UserIDs: []string{}},
@@ -2264,7 +2250,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						Roles: map[string]RoleConfig{
 							"admin":  {UserIDs: []string{"user1"}},
@@ -2281,7 +2267,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						Roles: map[string]RoleConfig{
 							"admin":  {UserIDs: []string{"*"}},
@@ -2298,7 +2284,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						DefaultRole: "superadmin",
 						Roles: map[string]RoleConfig{
@@ -2315,7 +2301,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						DefaultRole: "member",
 						Roles: map[string]RoleConfig{
@@ -2333,7 +2319,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						Roles: map[string]RoleConfig{
 							"admin":  {UserIDs: []string{"u1"}},
@@ -2410,7 +2396,7 @@ func TestPickAgentTemplateForNewProject(t *testing.T) {
 				Model:  "gpt-4",
 			}},
 		},
-		Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+		Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 	}
 
 	t.Run("clone from existing project", func(t *testing.T) {
@@ -2524,139 +2510,6 @@ func TestCloneAgentConfig(t *testing.T) {
 	})
 }
 
-func TestEnsureProjectWithWeixinPlatform_CreatesMissingProject(t *testing.T) {
-	configPath := writeConfigFixture(t, feishuConfigFixture)
-	patchConfigPath(t, configPath)
-
-	result, err := EnsureProjectWithWeixinPlatform(EnsureProjectWithWeixinOptions{
-		ProjectName: "gamma",
-		WorkDir:     "/tmp/gamma",
-	})
-	if err != nil {
-		t.Fatalf("EnsureProjectWithWeixinPlatform returned error: %v", err)
-	}
-	if !result.Created {
-		t.Fatal("result.Created = false, want true")
-	}
-	if result.AddedPlatform {
-		t.Fatal("result.AddedPlatform = true, want false")
-	}
-
-	cfg := readConfigFixture(t, configPath)
-	if len(cfg.Projects) != 2 {
-		t.Fatalf("len(cfg.Projects) = %d, want 2", len(cfg.Projects))
-	}
-	proj := cfg.Projects[1]
-	if proj.Name != "gamma" {
-		t.Fatalf("proj.Name = %q, want %q", proj.Name, "gamma")
-	}
-	if len(proj.Platforms) != 1 {
-		t.Fatalf("len(proj.Platforms) = %d, want 1", len(proj.Platforms))
-	}
-	if proj.Platforms[0].Type != "weixin" {
-		t.Fatalf("platform type = %q, want weixin", proj.Platforms[0].Type)
-	}
-}
-
-func TestEnsureProjectWithWeixinPlatform_AddsPlatformWhenMissing(t *testing.T) {
-	configPath := writeConfigFixture(t, projectWithoutFeishuFixture)
-	patchConfigPath(t, configPath)
-
-	result, err := EnsureProjectWithWeixinPlatform(EnsureProjectWithWeixinOptions{
-		ProjectName: "beta",
-	})
-	if err != nil {
-		t.Fatalf("EnsureProjectWithWeixinPlatform returned error: %v", err)
-	}
-	if result.Created {
-		t.Fatal("result.Created = true, want false")
-	}
-	if !result.AddedPlatform {
-		t.Fatal("result.AddedPlatform = false, want true")
-	}
-
-	cfg := readConfigFixture(t, configPath)
-	proj := cfg.Projects[0]
-	if len(proj.Platforms) != 2 {
-		t.Fatalf("len(proj.Platforms) = %d, want 2", len(proj.Platforms))
-	}
-	if proj.Platforms[1].Type != "weixin" {
-		t.Fatalf("platform type = %q, want weixin", proj.Platforms[1].Type)
-	}
-}
-
-func TestSaveWeixinPlatformCredentials_UpdateToken(t *testing.T) {
-	configPath := writeConfigFixture(t, weixinConfigFixture)
-	patchConfigPath(t, configPath)
-
-	_, err := SaveWeixinPlatformCredentials(WeixinCredentialUpdateOptions{
-		ProjectName: "alpha",
-		Token:       "new_weixin_token",
-		BaseURL:     "https://ilinkai.weixin.qq.com",
-	})
-	if err != nil {
-		t.Fatalf("SaveWeixinPlatformCredentials returned error: %v", err)
-	}
-
-	cfg := readConfigFixture(t, configPath)
-	tok, _ := cfg.Projects[0].Platforms[0].Options["token"].(string)
-	if tok != "new_weixin_token" {
-		t.Fatalf("token = %q, want new_weixin_token", tok)
-	}
-	bu, _ := cfg.Projects[0].Platforms[0].Options["base_url"].(string)
-	if bu != "https://ilinkai.weixin.qq.com" {
-		t.Fatalf("base_url = %q", bu)
-	}
-}
-
-func TestSaveWeixinPlatformCredentials_AppendsScannedUserToAllowFrom(t *testing.T) {
-	configPath := writeConfigFixture(t, strings.Replace(weixinConfigFixture, `base_url = "https://ilink.example"`, "base_url = \"https://ilink.example\"\nallow_from = \"wx_user_1\"", 1))
-	patchConfigPath(t, configPath)
-
-	result, err := SaveWeixinPlatformCredentials(WeixinCredentialUpdateOptions{
-		ProjectName:       "alpha",
-		Token:             "new_weixin_token",
-		ScannedUserID:     "wx_user_2",
-		SetAllowFromEmpty: true,
-	})
-	if err != nil {
-		t.Fatalf("SaveWeixinPlatformCredentials returned error: %v", err)
-	}
-
-	if result.AllowFrom != "wx_user_1,wx_user_2" {
-		t.Fatalf("result.AllowFrom = %q, want %q", result.AllowFrom, "wx_user_1,wx_user_2")
-	}
-
-	cfg := readConfigFixture(t, configPath)
-	if got := stringMapValue(cfg.Projects[0].Platforms[0].Options, "allow_from"); got != "wx_user_1,wx_user_2" {
-		t.Fatalf("allow_from = %q, want %q", got, "wx_user_1,wx_user_2")
-	}
-}
-
-func TestSaveWeixinPlatformCredentials_LeavesWildcardAllowFromUnchanged(t *testing.T) {
-	configPath := writeConfigFixture(t, strings.Replace(weixinConfigFixture, `base_url = "https://ilink.example"`, "base_url = \"https://ilink.example\"\nallow_from = \"*\"", 1))
-	patchConfigPath(t, configPath)
-
-	result, err := SaveWeixinPlatformCredentials(WeixinCredentialUpdateOptions{
-		ProjectName:       "alpha",
-		Token:             "new_weixin_token",
-		ScannedUserID:     "wx_user_2",
-		SetAllowFromEmpty: true,
-	})
-	if err != nil {
-		t.Fatalf("SaveWeixinPlatformCredentials returned error: %v", err)
-	}
-
-	if result.AllowFrom != "*" {
-		t.Fatalf("result.AllowFrom = %q, want %q", result.AllowFrom, "*")
-	}
-
-	cfg := readConfigFixture(t, configPath)
-	if got := stringMapValue(cfg.Projects[0].Platforms[0].Options, "allow_from"); got != "*" {
-		t.Fatalf("allow_from = %q, want %q", got, "*")
-	}
-}
-
 func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 	configPath := writeConfigFixture(t, feishuConfigFixture)
 	patchConfigPath(t, configPath)
@@ -2670,7 +2523,7 @@ func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 		Mode:                 &mode,
 		ShowContextIndicator: &show,
 		ShowWorkdirIndicator: &hideWorkdir,
-		PlatformAllowFrom:    map[string]string{"telegram": "u1", "Feishu": "u2"},
+		PlatformAllowFrom:    map[string]string{"external-placeholder": "u1", "Feishu": "u2"},
 	})
 	if err != nil {
 		t.Fatalf("SaveProjectSettings: %v", err)
@@ -2691,7 +2544,7 @@ func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 		t.Fatalf("ShowWorkdirIndicator = %v, want false (per patch)", proj.ShowWorkdirIndicator)
 	}
 	if stringMapValue(proj.Platforms[0].Options, "allow_from") != "u1" {
-		t.Fatalf("telegram allow_from = %q, want u1", stringMapValue(proj.Platforms[0].Options, "allow_from"))
+		t.Fatalf("external placeholder allow_from = %q, want u1", stringMapValue(proj.Platforms[0].Options, "allow_from"))
 	}
 	if stringMapValue(proj.Platforms[1].Options, "allow_from") != "u2" {
 		t.Fatalf("feishu allow_from = %q, want u2", stringMapValue(proj.Platforms[1].Options, "allow_from"))
@@ -2719,7 +2572,7 @@ func TestAddPlatformToProject_NewProjectWithAgentTypeAndWorkDir(t *testing.T) {
 	configPath := writeConfigFixture(t, feishuConfigFixture)
 	patchConfigPath(t, configPath)
 
-	err := AddPlatformToProject("sigma", PlatformConfig{Type: "slack", Options: map[string]any{"token": "x"}}, "/sigma", "gemini")
+	err := AddPlatformToProject("sigma", PlatformConfig{Type: "feishu", Options: map[string]any{"token": "x"}}, "/sigma", "gemini")
 	if err != nil {
 		t.Fatalf("AddPlatformToProject: %v", err)
 	}
@@ -2737,7 +2590,7 @@ func TestAddPlatformToProject_NewProjectWithAgentTypeAndWorkDir(t *testing.T) {
 	if stringMapValue(proj.Agent.Options, "work_dir") != "/sigma" {
 		t.Fatalf("work_dir = %q", stringMapValue(proj.Agent.Options, "work_dir"))
 	}
-	if len(proj.Platforms) != 1 || proj.Platforms[0].Type != "slack" {
+	if len(proj.Platforms) != 1 || proj.Platforms[0].Type != "feishu" {
 		t.Fatalf("platforms = %#v", proj.Platforms)
 	}
 }
@@ -2746,7 +2599,7 @@ func TestAddPlatformToProject_NewProjectClonesAgentWhenAgentTypeEmpty(t *testing
 	configPath := writeConfigFixture(t, feishuConfigFixture)
 	patchConfigPath(t, configPath)
 
-	err := AddPlatformToProject("tau", PlatformConfig{Type: "slack", Options: map[string]any{"token": "x"}}, "", "")
+	err := AddPlatformToProject("tau", PlatformConfig{Type: "feishu", Options: map[string]any{"token": "x"}}, "", "")
 	if err != nil {
 		t.Fatalf("AddPlatformToProject: %v", err)
 	}
@@ -2765,12 +2618,12 @@ func TestFormatTOML(t *testing.T) {
 		name, input, want string
 	}{
 		{
-			name:  "collapse multiple blank lines",
+			name:  "collapse multiple blank feishus",
 			input: "a = 1\n\n\n\nb = 2\n",
 			want:  "a = 1\n\nb = 2\n",
 		},
 		{
-			name:  "blank line before section header",
+			name:  "blank feishu before section header",
 			input: "a = 1\n[section]\nb = 2\n",
 			want:  "a = 1\n\n[section]\nb = 2\n",
 		},
@@ -2809,7 +2662,7 @@ func TestFormatConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
-	messy := "language = \"en\"   \n\n\n\n[[projects]]\nname = \"test\"\n\n\n[projects.agent]\ntype = \"codex\"\n\n[projects.agent.options]\n\n[[projects.platforms]]\ntype = \"telegram\"\n\n[projects.platforms.options]\ntoken = \"abc\"\n"
+	messy := "language = \"en\"   \n\n\n\n[[projects]]\nname = \"test\"\n\n\n[projects.agent]\ntype = \"codex\"\n\n[projects.agent.options]\n\n[[projects.platforms]]\ntype = \"feishu\"\n\n[projects.platforms.options]\ntoken = \"abc\"\n"
 	os.WriteFile(path, []byte(messy), 0o644)
 
 	if err := FormatConfigFile(path); err != nil {
@@ -2823,7 +2676,7 @@ func TestFormatConfigFile(t *testing.T) {
 		t.Error("trailing whitespace not stripped")
 	}
 	if strings.Contains(content, "\n\n\n") {
-		t.Error("consecutive blank lines not collapsed")
+		t.Error("consecutive blank feishus not collapsed")
 	}
 
 	cfg := &Config{}
@@ -3342,7 +3195,7 @@ func TestRemoveGlobalProvider_CleansUpProviderRefs(t *testing.T) {
     type = "codex"
     provider_refs = ["prov-a"]
   [[projects.platforms]]
-    type = "telegram"
+    type = "feishu"
     [projects.platforms.options]
       token = "t"
 `

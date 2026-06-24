@@ -40,7 +40,7 @@ func (r *SkillRegistry) SetDirs(dirs []string) {
 }
 
 // Resolve looks up a skill by name. Returns nil if not found.
-// Hyphens and underscores are treated as equivalent so that Telegram-sanitized
+// Hyphens and underscores are treated as equivalent so that platform-sanitized
 // names (e.g. "calendar_scheduler") match original skill names ("calendar-scheduler").
 func (r *SkillRegistry) Resolve(name string) *Skill {
 	norm := normalizeCommandName(name)

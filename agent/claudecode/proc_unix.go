@@ -13,7 +13,7 @@ import (
 // the entire descendant tree can be terminated with a single signal aimed at
 // the negative PID. Without this, cc-connect can only signal the direct
 // child (e.g. the `claude` CLI), leaving any grandchildren (MCP server
-// processes such as the Telegram bridge) as orphans that may spin at 100%
+// child bridge processes) as orphans that may spin at 100%
 // CPU when their parent disappears.
 //
 // Mirrors the pattern used by agent/codex/proc_unix.go.

@@ -32,7 +32,7 @@ const defaultMaxQueuedMessages = 5 // default cap for queued messages per sessio
 // defaultPendingRestartTimeout is how long the post-restart notify
 // dispatcher waits for the target platform to reach ready before
 // dropping the notify with a warning. 10s covers the typical 2-3s
-// Telegram connect window with margin and is short enough that a stuck
+// connect window with margin and is short enough that a stuck
 // platform does not block startup logging indefinitely.
 const defaultPendingRestartTimeout = 10 * time.Second
 
@@ -188,7 +188,7 @@ func (e *Engine) runPendingRestartNotify(req *RestartRequest, firedCh chan struc
 	defer close(firedCh)
 
 	// Wait briefly for the platform to reach ready if it's not already.
-	// Upper bound: matches the typical Telegram 2-3 s connect window
+	// Upper bound: matches the typical 2-3 s connect window
 	// with margin (see defaultPendingRestartTimeout), and short enough
 	// that a stuck platform does not block startup logging forever.
 	timeout := e.pendingRestartTimeout
@@ -429,7 +429,7 @@ type Engine struct {
 	// Terminal observation (--observe)
 	observeEnabled    bool
 	observeProjectDir string // ~/.claude/projects/{projectKey}
-	observeSessionKey string // e.g. "slack:C123:U456" — target for forwarding
+	observeSessionKey string // target session key for forwarding
 	observeCancel     context.CancelFunc
 
 	// Interactive agent session management
@@ -445,7 +445,7 @@ type Engine struct {
 	// pendingRestartNotify is queued at startup if a /restart was consumed
 	// from the run/restart_notify file. It is dispatched on the first
 	// OnPlatformReady for the matching platform name, so async platforms
-	// (Telegram, Weixin, Matrix, Discord) have a chance to actually connect
+	// with async recovery have a chance to actually connect
 	// before the post-restart message is sent. See issue #1383.
 	pendingRestartMu      sync.Mutex
 	pendingRestartNotify  *RestartRequest
@@ -958,7 +958,7 @@ func (e *Engine) SetAttachmentSendEnabled(v bool) {
 
 // SetObserveConfig enables terminal session observation.
 // projectDir is the Claude Code project directory containing session JSONL files.
-// sessionKey identifies the Slack channel to forward messages to.
+// sessionKey identifies the channel to forward messages to.
 func (e *Engine) SetObserveConfig(projectDir, sessionKey string) {
 	e.observeEnabled = true
 	e.observeProjectDir = projectDir
@@ -1369,7 +1369,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		}
 	}
 	// Fallback: in multi-workspace mode the stored session key may be prefixed
-	// with the workspace path (e.g. "/home/user/project:slack:C123:U456").
+	// with the workspace path.
 	// Search for a known platform name within the key and strip the prefix.
 	if targetPlatform == nil {
 		for _, p := range e.platforms {
@@ -1526,7 +1526,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		// Empty-response detection via session history delta: processInteractiveMessageWith
 		// always adds a "user" entry (prevHistLen+1), then an "assistant" entry on success
 		// (prevHistLen+2). This approach correctly detects empty responses across all
-		// delivery modes (plain text, cards, rich cards, DingTalk AI streaming) because
+		// delivery modes (plain text, cards, rich cards, card streaming) because
 		// AddHistory("assistant",...) is called before any platform-specific rendering path.
 		if !job.Mute && session.HistoryLen() < prevHistLen+2 {
 			return fmt.Errorf("cron job %q produced an empty response", job.ID)
@@ -2148,7 +2148,7 @@ func (e *Engine) ExecuteHeartbeat(sessionKey, prompt string, silent bool) error 
 		}
 	}
 	// Fallback: in multi-workspace mode the stored session key may be prefixed
-	// with the workspace path (e.g. "/home/user/project:slack:C123:U456").
+	// with the workspace path.
 	// Search for a known platform name within the key and strip the prefix.
 	if targetPlatform == nil {
 		for _, p := range e.platforms {
@@ -11068,7 +11068,7 @@ func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName
 		Extra:    map[string]any{"tool_name": toolName},
 	})
 
-	// Try inline buttons first (Telegram)
+	// Try inline buttons first
 	if bs, ok := p.(InlineButtonSender); ok {
 		buttons := [][]ButtonOption{
 			{
@@ -11172,7 +11172,7 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 		return
 	}
 
-	// Try inline buttons (Telegram)
+	// Try inline buttons.
 	if bs, ok := p.(InlineButtonSender); ok {
 		var textBuf strings.Builder
 		textBuf.WriteString("❓ *")
@@ -11323,7 +11323,7 @@ func (e *Engine) sendWithError(p Platform, replyCtx any, content string) error {
 func (e *Engine) sendAlreadyRenderedWithError(p Platform, replyCtx any, content string) error {
 	start := time.Now()
 	if err := p.Send(e.ctx, replyCtx, content); err != nil {
-		// Check for context_token missing error (common for Weixin platform)
+		// Check for context_token missing error
 		if strings.Contains(err.Error(), "missing context_token") {
 			slog.Error("platform send failed: context_token missing",
 				"platform", p.Name(),
@@ -14367,7 +14367,6 @@ func (e *Engine) cmdSkills(p Platform, msg *Message) {
 	e.replyWithCard(p, msg.ReplyCtx, e.renderSkillsCard())
 }
 
-
 // ── /config command ──────────────────────────────────────────
 
 // configItem describes a configurable runtime parameter.
@@ -15694,7 +15693,7 @@ func extractUserID(sessionKey string) string {
 	// Format: "platform:channelID:userID" or "platform:type:channelID:userID"
 	// When parts[1] is a single-char type tag, the user ID is in parts[3]
 	// (4-segment form). The 3-segment form with a type tag (shared session,
-	// e.g. "dingtalk:g:cid") has no per-user ID, so return "".
+	// If the session key has no per-user ID, return "".
 	parts := strings.SplitN(sessionKey, ":", 5)
 	if len(parts) >= 3 && len(parts[1]) == 1 {
 		if len(parts) >= 4 {
@@ -15807,13 +15806,12 @@ func (e *Engine) sessionContextForKey(sessionKey string) (Agent, *SessionManager
 			}
 		}
 	}
-	// Live-state fallback: when channel-derived binding misses (Discord
-	// thread_isolation case where binding is keyed by parent channel but
-	// sessionKey is the thread ID), recover the workspace from any live
-	// interactive state keyed as "<workspace>:<sessionKey>". Without this,
-	// callers would route to the global agent while interactiveKeyForSessionKey
-	// returns the workspace-prefixed key, allowing concurrent unlocked sends
-	// to the same agent session.
+	// Live-state fallback: when channel-derived binding misses for a
+	// thread-isolated session, recover the workspace from any live interactive
+	// state keyed as "<workspace>:<sessionKey>". Without this, callers would
+	// route to the global agent while interactiveKeyForSessionKey returns the
+	// workspace-prefixed key, allowing concurrent unlocked sends to the same
+	// agent session.
 	if workspace := e.workspaceFromLiveState(sessionKey); workspace != "" {
 		if wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(workspace); err == nil {
 			return wsAgent, wsSessions
@@ -15923,7 +15921,7 @@ func (e *Engine) interactiveKeyForSessionKey(sessionKey string) string {
 //     any stale workspace state becomes unreachable through this lookup,
 //     which is exactly what we want.
 //  3. Live-state suffix scan — only fires when channel-binding lookup
-//     fails. This is the recovery path for Discord thread_isolation: the
+//     fails. This is the recovery path for thread-isolated session: the
 //     binding is keyed by the parent channel, but sessionKey is the thread
 //     ID, so step 2 misses. The state map was keyed correctly at processing
 //     time, so we recover the workspace prefix from there.

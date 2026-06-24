@@ -27,7 +27,6 @@ type FeishuSetupSaveRequest struct {
 	AgentType    string `json:"agent_type"`
 }
 
-
 // ── Feishu / Lark QR Setup ──────────────────────────────────
 
 func (m *ManagementServer) handleSetupFeishuBegin(w http.ResponseWriter, r *http.Request) {

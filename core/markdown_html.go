@@ -9,7 +9,7 @@ import (
 
 // MarkdownToSimpleHTML converts common Markdown to a simplified HTML subset.
 // Supported tags: <b>, <i>, <s>, <code>, <pre>, <a href="">, <blockquote>.
-// Useful for platforms that accept a limited set of HTML (e.g. Telegram).
+// Useful for platforms that accept a limited set of HTML .
 func MarkdownToSimpleHTML(md string) string {
 	var b strings.Builder
 	b.Grow(len(md) + len(md)/4)
@@ -61,7 +61,7 @@ func MarkdownToSimpleHTML(md string) string {
 	// flushTable renders buffered table rows inside a <pre> block with aligned columns.
 	//
 	// Inline formatting in cells (bold/italic/inline-code/strikethrough/links)
-	// is rendered as Telegram HTML tags; Telegram permits <b>, <i>, <u>, <s>,
+	// is rendered as HTML tags; The target renderer permits <b>, <i>, <u>, <s>,
 	// <code>, <a> inside <pre>, so `**foo**` becomes a bold "foo" rather than
 	// four literal asterisks. Column widths are computed from the *visual*
 	// (post-strip) rune length so that ` | ` separators still line up even
@@ -142,7 +142,7 @@ func MarkdownToSimpleHTML(md string) string {
 					if k < len(r.cells) {
 						cell = r.cells[k]
 					}
-					// Render inline formatting to HTML tags (Telegram accepts
+					// Render inline formatting to HTML tags (the target renderer accepts
 					// <b>/<i>/<code>/<a>/etc. inside <pre>). Falls back to
 					// plain HTML-escaped text when there is no formatting.
 					b.WriteString(convertInlineHTML(cell))
@@ -284,7 +284,7 @@ var (
 	reCallout        = regexp.MustCompile(`^\[!(\w+)\]\s*(.*)$`)
 )
 
-// convertInlineHTML converts inline Markdown formatting to Telegram-compatible HTML.
+// convertInlineHTML converts inline Markdown formatting to limited-platform HTML.
 //
 // Each formatting pass (bold, strikethrough) protects its output as placeholders
 // so that subsequent passes (italic) cannot match across HTML tag boundaries.
@@ -302,7 +302,7 @@ func convertInlineHTML(s string) string {
 	// containing '>'. Step 3 (escapeHTML on the entire string) then rewrote
 	// '<'/'>' inside those keys to "&lt;"/"&gt;" before step 8 could restore
 	// them, leaking literal "\x00PH<\x00" / "\x00PH>\x00" fragments into the
-	// rendered Telegram message and dropping the original code/link content.
+	// rendered message and dropping the original code/link content.
 	// Decimal digits stay in the safe ASCII range regardless of phIdx, and
 	// no two indices collide.
 	nextPH := func(html string) string {

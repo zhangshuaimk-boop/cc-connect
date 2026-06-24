@@ -359,7 +359,7 @@ func TestHandleCronExec_TriggersJob(t *testing.T) {
 	scheduler := NewCronScheduler(store)
 
 	platform := &stubCronReplyTargetPlatform{
-		stubPlatformEngine: stubPlatformEngine{n: "discord"},
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 	}
 	agentSession := newResultAgentSession("triggered from local api")
 	engine := NewEngine("test", &resultAgent{session: agentSession}, []Platform{platform}, "", LangEnglish)
@@ -370,7 +370,7 @@ func TestHandleCronExec_TriggersJob(t *testing.T) {
 	job := &CronJob{
 		ID:          "job-run-api",
 		Project:     "test",
-		SessionKey:  "discord:channel-1:user-1",
+		SessionKey:  "feishu:channel-1:user-1",
 		CronExpr:    "0 6 * * *",
 		Prompt:      "run now",
 		Description: "Run from API",
@@ -412,7 +412,7 @@ func TestHandleCronExec_RunAliasRouteTriggersJob(t *testing.T) {
 	scheduler := NewCronScheduler(store)
 
 	platform := &stubCronReplyTargetPlatform{
-		stubPlatformEngine: stubPlatformEngine{n: "discord"},
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 	}
 	agentSession := newResultAgentSession("triggered from local api alias")
 	engine := NewEngine("test", &resultAgent{session: agentSession}, []Platform{platform}, "", LangEnglish)
@@ -423,7 +423,7 @@ func TestHandleCronExec_RunAliasRouteTriggersJob(t *testing.T) {
 	job := &CronJob{
 		ID:          "job-run-api-alias",
 		Project:     "test",
-		SessionKey:  "discord:channel-1:user-1",
+		SessionKey:  "feishu:channel-1:user-1",
 		CronExpr:    "0 6 * * *",
 		Prompt:      "run alias now",
 		Description: "Run from API alias",
@@ -469,7 +469,7 @@ func TestHandleCronExec_ProjectMissingIsBadRequest(t *testing.T) {
 	job := &CronJob{
 		ID:         "job-run-missing-project",
 		Project:    "ghost",
-		SessionKey: "discord:channel-1:user-1",
+		SessionKey: "feishu:channel-1:user-1",
 		CronExpr:   "0 6 * * *",
 		Prompt:     "run now",
 		Enabled:    true,

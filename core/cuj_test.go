@@ -552,7 +552,7 @@ func TestCUJ_D7_OutgoingRateLimitThrottlesBurst(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// With burst=2 + 5/s, the lower bound is (N - burst) / rate = 8/5 = 1.6s.
-	// We allow a small slack for CI jitter.
+	// We allow a small timing margin for CI jitter.
 	min := time.Duration(float64(N-2)/5.0*1000) * time.Millisecond
 	if elapsed < min-100*time.Millisecond {
 		t.Fatalf("sent %d msgs in %v; expected ≥ ~%v due to rate limit (5/s, burst 2). "+
@@ -1090,8 +1090,8 @@ func TestCUJ_A3_ImageReachesAgent(t *testing.T) {
 	msg := &Message{
 		SessionKey: "test:img", Platform: "test", MessageID: "img1",
 		UserID: "img", UserName: "img",
-		Content: "what is in this image",
-		Images:  []ImageAttachment{{MimeType: "image/png", Data: []byte("\x89PNG fake"), FileName: "chart.png"}},
+		Content:  "what is in this image",
+		Images:   []ImageAttachment{{MimeType: "image/png", Data: []byte("\x89PNG fake"), FileName: "chart.png"}},
 		ReplyCtx: "ctx",
 	}
 	e.ReceiveMessage(plat, msg)
@@ -1102,7 +1102,9 @@ func TestCUJ_A3_ImageReachesAgent(t *testing.T) {
 		n := len(agent.sessions)
 		agent.mu.Unlock()
 		if n > 0 {
-			break
+			if len(plat.getSent()) > 0 {
+				break
+			}
 		}
 		select {
 		case <-deadline:
@@ -1154,8 +1156,8 @@ func TestCUJ_A5_FileReachesAgent(t *testing.T) {
 	msg := &Message{
 		SessionKey: "test:file", Platform: "test", MessageID: "f1",
 		UserID: "file", UserName: "file",
-		Content: "read this file",
-		Files:   []FileAttachment{{MimeType: "text/plain", Data: []byte("hello world"), FileName: "note.txt"}},
+		Content:  "read this file",
+		Files:    []FileAttachment{{MimeType: "text/plain", Data: []byte("hello world"), FileName: "note.txt"}},
 		ReplyCtx: "ctx",
 	}
 	e.ReceiveMessage(plat, msg)
@@ -1166,7 +1168,9 @@ func TestCUJ_A5_FileReachesAgent(t *testing.T) {
 		n := len(agent.sessions)
 		agent.mu.Unlock()
 		if n > 0 {
-			return
+			if len(plat.getSent()) > 0 {
+				return
+			}
 		}
 		select {
 		case <-deadline:
@@ -1184,7 +1188,7 @@ func TestCUJ_A5_FileReachesAgent(t *testing.T) {
 // "no engine-level test" status is intentional.
 func TestCUJ_A6_A7_CoveredByPlatformLayer(t *testing.T) {
 	t.Log("CUJ-A6 (@-mention required in groups): covered by " +
-		"platform/wecom/mention_strip_test.go and TestCC_SECURITY_02_group_only")
+		"group mention stripping regression tests")
 	t.Log("CUJ-A7 (private chat does not require @): same coverage as A6")
 }
 
@@ -1915,7 +1919,7 @@ func TestCUJ_I4_StreamingToggleLinkedToIntegration(t *testing.T) {
 // messages without bleeding state into each other.
 //
 // Smoke-tests the "two platforms in one engine" path that powers
-// multi-channel deployments (e.g. user reachable on both Slack and Discord).
+// multi-channel deployments (e.g. user reachable through multiple configured adapters).
 // ===========================================================================
 
 func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
@@ -2008,4 +2012,3 @@ func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
 		t.Fatal("platB received no replies")
 	}
 }
-

@@ -253,7 +253,7 @@ func VerifyRunAsUserCheap(ctx context.Context, runner SudoRunner, runAsUser stri
 }
 
 // verifyCacheTTL is short by design. It absorbs a burst of messages
-// (one Slack user typing rapidly) while still re-verifying often enough
+// (one user typing rapidly) while still re-verifying often enough
 // that a sudoers edit during a long idle gap is caught on the next spawn.
 const verifyCacheTTL = 30 * time.Second
 

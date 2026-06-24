@@ -1463,8 +1463,8 @@ func TestRichCardImageBlocksPrivateAndReservedIPs(t *testing.T) {
 }
 
 func containsMarkdownLine(content string, want string) bool {
-	for _, line := range strings.Split(content, "\n") {
-		if strings.TrimSpace(line) == want {
+	for _, feishu := range strings.Split(content, "\n") {
+		if strings.TrimSpace(feishu) == want {
 			return true
 		}
 	}

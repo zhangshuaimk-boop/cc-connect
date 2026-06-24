@@ -57,7 +57,7 @@ func TestParseSendArgs_RequiresMessageOrAttachment(t *testing.T) {
 
 func TestParseSendArgs_UsesSessionEnvFallback(t *testing.T) {
 	t.Setenv("CC_PROJECT", "demo")
-	t.Setenv("CC_SESSION_KEY", "telegram:123:456")
+	t.Setenv("CC_SESSION_KEY", "feishu:oc_123:ou_456")
 
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "chart.png")
@@ -72,8 +72,8 @@ func TestParseSendArgs_UsesSessionEnvFallback(t *testing.T) {
 	if req.Project != "demo" {
 		t.Fatalf("project = %q, want demo", req.Project)
 	}
-	if req.SessionKey != "telegram:123:456" {
-		t.Fatalf("session = %q, want telegram:123:456", req.SessionKey)
+	if req.SessionKey != "feishu:oc_123:ou_456" {
+		t.Fatalf("session = %q, want feishu:oc_123:ou_456", req.SessionKey)
 	}
 }
 
@@ -184,7 +184,7 @@ func TestParseSendArgs_AudioVideoFileMixed_StaySeparate(t *testing.T) {
 
 func TestParseSendArgs_TTSOnly(t *testing.T) {
 	t.Setenv("CC_PROJECT", "demo")
-	t.Setenv("CC_SESSION_KEY", "telegram:123:456")
+	t.Setenv("CC_SESSION_KEY", "feishu:oc_123:ou_456")
 
 	req, _, err := parseSendArgs([]string{"--tts", "hello voice"})
 	if err != nil {
@@ -193,8 +193,8 @@ func TestParseSendArgs_TTSOnly(t *testing.T) {
 	if req.Project != "demo" {
 		t.Fatalf("project = %q, want demo", req.Project)
 	}
-	if req.SessionKey != "telegram:123:456" {
-		t.Fatalf("session = %q, want telegram:123:456", req.SessionKey)
+	if req.SessionKey != "feishu:oc_123:ou_456" {
+		t.Fatalf("session = %q, want feishu:oc_123:ou_456", req.SessionKey)
 	}
 	if req.TTSText != "hello voice" {
 		t.Fatalf("tts text = %q", req.TTSText)
@@ -314,7 +314,7 @@ func TestResolveMaxAttachmentSize(t *testing.T) {
 func TestBuildSendPayload_JSONRoundTrip(t *testing.T) {
 	req := core.SendRequest{
 		Project:    "demo",
-		SessionKey: "telegram:1:2",
+		SessionKey: "feishu:oc_1:ou_2",
 		Message:    "done",
 		TTSText:    "voice done",
 		Images: []core.ImageAttachment{{

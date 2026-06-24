@@ -16,8 +16,7 @@ import (
 )
 
 // ObserverTarget is an optional interface that platforms can implement to receive
-// terminal observation messages. Currently only Slack implements this.
-// Other platforms can implement it in the future without changes to core.
+// terminal observation messages.
 type ObserverTarget interface {
 	SendObservation(ctx context.Context, channelID, text string) error
 }
@@ -111,7 +110,7 @@ func (e *Engine) startObserver() {
 }
 
 // sessionObserver watches Claude Code JSONL session logs and forwards
-// user/assistant messages to an ObserverTarget (e.g. Slack).
+// user/assistant messages to an ObserverTarget.
 type sessionObserver struct {
 	projectDir string
 	target     ObserverTarget
@@ -247,7 +246,7 @@ func (o *sessionObserver) forward(ctx context.Context, obs *observation) {
 		return
 	}
 
-	// Slack has a 4000 char limit per message; truncate if needed
+	// Keep forwarded observations small enough for platform message limits.
 	const maxLen = 3900
 	if len(msg) > maxLen {
 		truncated := msg[:maxLen]

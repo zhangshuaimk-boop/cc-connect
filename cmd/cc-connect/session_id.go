@@ -249,5 +249,5 @@ Options:
 
 Examples:
   cc-connect agent-sid                         Auto-detect from env (inside a session)
-  cc-connect agent-sid -p mybot -s "discord:123:456"`)
+  cc-connect agent-sid -p mybot -s "feishu:oc_xxx:ou_xxx"`)
 }

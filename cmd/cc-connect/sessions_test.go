@@ -17,10 +17,10 @@ func TestParseSessionKey(t *testing.T) {
 		wantGroup    string
 	}{
 		{"feishu:oc_xxx:ou_yyy", "feishu", "oc_xxx:ou_yyy"},
-		{"telegram:123:456", "telegram", "123:456"},
-		{"discord:guild123", "discord", "guild123"},
+		{"feishu:oc_123:ou_456", "feishu", "oc_123:ou_456"},
+		{"feishu:guild123", "feishu", "guild123"},
 		{"nocolon", "nocolon", ""},
-		{"slack:", "slack", ""},
+		{"feishu:", "feishu", ""},
 		{":empty", "", "empty"},
 	}
 
@@ -86,7 +86,7 @@ func TestLoadAllSessions(t *testing.T) {
 			},
 		},
 		UserSessions: map[string][]string{
-			"telegram:123:456": {"s1", "s2"},
+			"feishu:oc_123:ou_456": {"s1", "s2"},
 		},
 	}
 
@@ -116,10 +116,10 @@ func TestLoadAllSessions(t *testing.T) {
 	if first.GlobalID != "project_b:s1" {
 		t.Errorf("first record GlobalID = %q, want %q", first.GlobalID, "project_b:s1")
 	}
-	if first.Platform != "telegram" {
-		t.Errorf("first record Platform = %q, want %q", first.Platform, "telegram")
+	if first.Platform != "feishu" {
+		t.Errorf("first record Platform = %q, want %q", first.Platform, "feishu")
 	}
-	if first.GroupUser != "123:456" {
+	if first.GroupUser != "oc_123:ou_456" {
 		t.Errorf("first record GroupUser = %q, want %q", first.GroupUser, "123:456")
 	}
 	if first.Messages != 1 {
@@ -177,7 +177,7 @@ func TestLoadAllSessionsSkipsMalformed(t *testing.T) {
 			"s1": {ID: "s1", Name: "ok", UpdatedAt: time.Now()},
 		},
 		UserSessions: map[string][]string{
-			"slack:chan1": {"s1"},
+			"feishu:oc_chan:ou_user": {"s1"},
 		},
 	}
 	writeSessionFile(t, sessionsDir, "valid.json", valid)

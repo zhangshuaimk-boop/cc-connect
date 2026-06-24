@@ -558,7 +558,7 @@ func TestStreamingPreviewFinalizationContractExposesDuplicateFinalSend(t *testin
 	}
 }
 
-func TestStreamingPreviewConfigurationMatrix(t *testing.T) {
+func TestStreamingPreviewConfigurationScenario(t *testing.T) {
 	tests := []struct {
 		name        string
 		cfg         core.StreamPreviewCfg
@@ -599,7 +599,7 @@ func TestStreamingPreviewConfigurationMatrix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			agent := newTurnAgent()
 			platform := &previewLifecyclePlatform{}
-			engine := core.NewEngine("release-preview-matrix", agent, []core.Platform{platform}, t.TempDir()+"/sessions.json", core.LangEnglish)
+			engine := core.NewEngine("release-preview-scenario", agent, []core.Platform{platform}, t.TempDir()+"/sessions.json", core.LangEnglish)
 			engine.SetReplyFooterEnabled(true)
 			engine.SetStreamPreviewCfg(tt.cfg)
 			t.Cleanup(func() {
@@ -608,7 +608,7 @@ func TestStreamingPreviewConfigurationMatrix(t *testing.T) {
 			})
 			agent.session.blockFirstResult()
 
-			msg := turnMessage("streaming config matrix")
+			msg := turnMessage("streaming config scenario")
 			go engine.ReceiveMessage(platform, msg)
 			agent.session.waitRecords(t, 1)
 
@@ -678,7 +678,7 @@ func TestStreamingPreviewMaxCharsOnlyTruncatesIntermediatePreview(t *testing.T) 
 	}
 }
 
-func TestReplyMetadataConfigurationMatrix(t *testing.T) {
+func TestReplyMetadataConfigurationScenario(t *testing.T) {
 	tests := []struct {
 		name       string
 		showCtx    bool
@@ -687,7 +687,7 @@ func TestReplyMetadataConfigurationMatrix(t *testing.T) {
 		forbid     []string
 	}{
 		{
-			name:       "context_and_footer_on_share_one_line",
+			name:       "context_and_footer_on_share_one_feishu",
 			showCtx:    true,
 			showFooter: true,
 			want:       []string{"answer", "[ctx: ~14%] · glm-5.1 · /tmp/release-agent"},
@@ -724,7 +724,7 @@ func TestReplyMetadataConfigurationMatrix(t *testing.T) {
 			engine.SetReplyFooterEnabled(tt.showFooter)
 			agent.session.setResult(core.Event{Type: core.EventResult, Content: "answer", InputTokens: 28000, Done: true})
 
-			engine.ReceiveMessage(platform, turnMessage("metadata matrix"))
+			engine.ReceiveMessage(platform, turnMessage("metadata scenario"))
 			platform.waitTextContaining(t, "answer")
 
 			texts, _, _, _ := platform.snapshot()
@@ -775,7 +775,7 @@ func TestLongFinalResponseKeepsMetadataOnceAtTail(t *testing.T) {
 	t.Fatalf("texts = %#v, want long response split into multiple chunks", texts)
 }
 
-func TestDisplayVisibilityConfigurationMatrix(t *testing.T) {
+func TestDisplayVisibilityConfigurationScenario(t *testing.T) {
 	tests := []struct {
 		name         string
 		thinking     bool
@@ -802,26 +802,26 @@ func TestDisplayVisibilityConfigurationMatrix(t *testing.T) {
 			})
 			agent.session.blockFirstResult()
 
-			msg := turnMessage("visibility matrix")
+			msg := turnMessage("visibility scenario")
 			go engine.ReceiveMessage(platform, msg)
 			agent.session.waitRecords(t, 1)
 
-			agent.session.emit(core.Event{Type: core.EventThinking, Content: "matrix thinking"})
+			agent.session.emit(core.Event{Type: core.EventThinking, Content: "scenario thinking"})
 			agent.session.emit(core.Event{Type: core.EventToolUse, ToolName: "Bash", ToolInput: "echo visible"})
 			agent.session.emit(core.Event{Type: core.EventToolResult, ToolName: "Bash", ToolResult: "visible output", ToolStatus: "completed"})
-			agent.session.releaseFirstResult(core.Event{Type: core.EventResult, Content: "matrix final", InputTokens: 52000, Done: true})
-			platform.waitTextContaining(t, "matrix final")
+			agent.session.releaseFirstResult(core.Event{Type: core.EventResult, Content: "scenario final", InputTokens: 52000, Done: true})
+			platform.waitTextContaining(t, "scenario final")
 
 			texts, _, _, _ := platform.snapshot()
 			joined := strings.Join(texts, "\n")
-			if got := strings.Contains(joined, "matrix thinking"); got != tt.wantThinking {
+			if got := strings.Contains(joined, "scenario thinking"); got != tt.wantThinking {
 				t.Fatalf("thinking visibility = %v, want %v; texts=%#v", got, tt.wantThinking, texts)
 			}
 			hasTool := strings.Contains(joined, "Bash") || strings.Contains(joined, "echo visible") || strings.Contains(joined, "visible output")
 			if hasTool != tt.wantTool {
 				t.Fatalf("tool visibility = %v, want %v; texts=%#v", hasTool, tt.wantTool, texts)
 			}
-			if countContaining(texts, "matrix final") != 1 {
+			if countContaining(texts, "scenario final") != 1 {
 				t.Fatalf("texts=%#v, want exactly one final answer", texts)
 			}
 		})

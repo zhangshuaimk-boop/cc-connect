@@ -27,8 +27,8 @@ func TestBuildReferenceViewRequest_ModeSelection(t *testing.T) {
 		mode referenceViewMode
 	}{
 		{name: "file", raw: file, mode: referenceViewFileHead},
-		{name: "line", raw: file + ":12", mode: referenceViewContext},
-		{name: "linecol", raw: file + ":12:2", mode: referenceViewContext},
+		{name: "feishu", raw: file + ":12", mode: referenceViewContext},
+		{name: "feishucol", raw: file + ":12:2", mode: referenceViewContext},
 		{name: "range", raw: file + ":8-17", mode: referenceViewRange},
 		{name: "hash", raw: file + "#L12", mode: referenceViewContext},
 		{name: "markdown", raw: "[handler.go](" + file + "#L12)", mode: referenceViewContext},
@@ -100,7 +100,7 @@ func TestRenderReferenceView_FileHeadAndContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(ctx, "func two() {}") {
-		t.Fatalf("context output = %q, want nearby line", ctx)
+		t.Fatalf("context output = %q, want nearby feishu", ctx)
 	}
 }
 

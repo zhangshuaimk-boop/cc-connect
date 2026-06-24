@@ -30,17 +30,16 @@ func TestPlatform_RelayGroupVisibilityKey(t *testing.T) {
 		{"feishu empty thread tail", "feishu:oc_chat:thread:", "", false},
 		{"feishu only two parts", "feishu:oc_chat", "", false},
 
-		// ── foreign platforms (must miss even if shape coincides) ─
-		{"slack t prefix", "slack:C123:t:1717000000.000100", "", false},
-		{"slack bare user", "slack:C123:U456", "", false},
-		{"telegram numeric", "telegram:-100123:456:789", "", false},
-		{"dingtalk bare user", "dingtalk:g:cid123:staff42", "", false},
-		{"wecom bare user", "wecom:wcid:wuser", "", false},
-		{"matrix at user", "matrix:!room:server.tld:@alice:server.tld", "", false},
+		// ── non-Feishu adapters must miss even if shape coincides ─
+		{"external t prefix", "external:C123:t:1717000000.000100", "", false},
+		{"external bare user", "external:C123:U456", "", false},
+		{"external numeric", "external:-100123:456:789", "", false},
+		{"external type tag", "external:g:cid123:staff42", "", false},
+		{"external room id", "external:!room:server.tld:@alice:server.tld", "", false},
 
-		// ── adversarial: foreign platform with feishu-looking 3rd
+		// ── adversarial: external adapter with feishu-looking 3rd
 		//   segment must still miss ───────────────────────────────
-		{"slack with root prefix", "slack:C123:root:fake", "", false},
+		{"external with root prefix", "external:C123:root:fake", "", false},
 
 		// ── degenerate inputs ────────────────────────────────────
 		{"empty string", "", "", false},

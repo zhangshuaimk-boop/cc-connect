@@ -122,7 +122,7 @@ func (p *stubCronReplyTargetPlatform) ReconstructReplyCtx(sessionKey string) (an
 func (p *stubCronReplyTargetPlatform) ResolveCronReplyTarget(sessionKey string, title string) (string, any, error) {
 	p.resolvedSessionKey = sessionKey
 	p.resolveTitle = title
-	return "discord:thread-fresh", "fresh-rctx", nil
+	return "feishu:thread-fresh", "fresh-rctx", nil
 }
 
 type resultAgent struct {
@@ -810,7 +810,7 @@ func TestEngineSendToSessionWithAttachments_MultiWorkspaceRawSessionKey(t *testi
 	}
 	normalizedWsDir := normalizeWorkspacePath(wsDir)
 	channelID := "C123"
-	rawKey := "slack:" + channelID + ":U1"
+	rawKey := "feishu:" + channelID + ":U1"
 	e.workspaceBindings.Bind("project:test", channelID, "chan", normalizedWsDir)
 
 	iKey := normalizedWsDir + ":" + rawKey
@@ -842,17 +842,17 @@ func (p *stubProactiveSendPlatform) ReconstructReplyCtx(sessionKey string) (any,
 
 func TestEngineSendToSessionWithAttachments_WorkspacePrefixedSessionKey(t *testing.T) {
 	p := &stubProactiveSendPlatform{
-		stubMediaPlatform: stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "slack"}},
+		stubMediaPlatform: stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}},
 	}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 
-	prefixed := "/tmp/myproject:slack:C123:U1"
+	prefixed := "/tmp/myproject:feishu:C123:U1"
 	err := e.SendToSessionWithAttachments(prefixed, "delivery ready", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("SendToSessionWithAttachments returned error: %v", err)
 	}
-	if p.reconstructKey != "slack:C123:U1" {
-		t.Fatalf("ReconstructReplyCtx key = %q, want slack:C123:U1", p.reconstructKey)
+	if p.reconstructKey != "feishu:C123:U1" {
+		t.Fatalf("ReconstructReplyCtx key = %q, want feishu:C123:U1", p.reconstructKey)
 	}
 	if got := p.getSent(); len(got) != 1 || got[0] != "delivery ready" {
 		t.Fatalf("sent text = %#v, want one message", got)
@@ -860,7 +860,7 @@ func TestEngineSendToSessionWithAttachments_WorkspacePrefixedSessionKey(t *testi
 }
 
 func TestEngineStart_DefersAsyncPlatformReadyInitialization(t *testing.T) {
-	p := &stubLifecyclePlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	p := &stubLifecyclePlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.AddCommand("help", "help", "", "", "", "test")
 
@@ -879,7 +879,7 @@ func TestEngineStart_DefersAsyncPlatformReadyInitialization(t *testing.T) {
 }
 
 func TestEngine_OnPlatformReady_IsIdempotentUntilUnavailable(t *testing.T) {
-	p := &stubLifecyclePlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	p := &stubLifecyclePlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.AddCommand("help", "help", "", "", "", "test")
 
@@ -906,7 +906,7 @@ func TestEngine_OnPlatformReady_IsIdempotentUntilUnavailable(t *testing.T) {
 }
 
 func TestEngine_OnPlatformUnavailable_IsIdempotent(t *testing.T) {
-	p := &stubLifecyclePlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	p := &stubLifecyclePlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.AddCommand("help", "help", "", "", "", "test")
 
@@ -925,7 +925,7 @@ func TestEngine_OnPlatformUnavailable_IsIdempotent(t *testing.T) {
 }
 
 func TestEngine_LifecycleCallbacksIgnoredAfterStopBegins(t *testing.T) {
-	p := &stubLifecyclePlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	p := &stubLifecyclePlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.AddCommand("help", "help", "", "", "", "test")
 
@@ -945,7 +945,7 @@ func TestEngine_LifecycleCallbacksIgnoredAfterStopBegins(t *testing.T) {
 }
 
 func TestEngine_StopDoesNotWaitForBlockedPlatformCapabilityInit(t *testing.T) {
-	p := newBlockingRegisterPlatform("telegram")
+	p := newBlockingRegisterPlatform("feishu")
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.AddCommand("help", "help", "", "", "", "test")
 
@@ -1100,10 +1100,10 @@ func TestProcessInteractiveEvents_NonTerminalResultContinuesTurn(t *testing.T) {
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s1")
 	state := &interactiveState{
-		agentSession:                  agentSession,
-		platform:                      p,
-		replyCtx:                      "ctx-1",
-		currentTurnUserMessageTimeMs:  100,
+		agentSession:                   agentSession,
+		platform:                       p,
+		replyCtx:                       "ctx-1",
+		currentTurnUserMessageTimeMs:   100,
 		lastCompletedUserMessageTimeMs: 0,
 	}
 	e.interactiveStates[sessionKey] = state
@@ -1185,11 +1185,11 @@ func TestProcessInteractiveEvents_AppendsReplyFooterWhenEnabled(t *testing.T) {
 			}},
 		},
 	}
-	p := &stubPlatformEngine{n: "telegram"}
+	p := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 	e.SetReplyFooterEnabled(true)
 
-	sessionKey := "telegram:user-footer"
+	sessionKey := "feishu:user-footer"
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s-footer")
 	state := &interactiveState{
@@ -1222,11 +1222,11 @@ func TestProcessInteractiveEvents_AppendsContextIndicatorInsideReplyFooter(t *te
 		stubModelModeAgent: stubModelModeAgent{model: "glm-5.1"},
 		workDir:            workDir,
 	}
-	p := &stubPlatformEngine{n: "telegram"}
+	p := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 	e.SetReplyFooterEnabled(true)
 
-	sessionKey := "telegram:user-footer-context"
+	sessionKey := "feishu:user-footer-context"
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s-footer-context")
 	state := &interactiveState{
@@ -1260,12 +1260,12 @@ func TestProcessInteractiveEvents_ToolSegmentsKeepFinalFooter(t *testing.T) {
 		stubModelModeAgent: stubModelModeAgent{model: "glm-5.1"},
 		workDir:            workDir,
 	}
-	p := &stubPlatformEngine{n: "telegram"}
+	p := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 	e.SetReplyFooterEnabled(true)
 	e.SetDisplayConfig(DisplayCfg{ThinkingMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500, ToolMessages: true})
 
-	sessionKey := "telegram:user-tool-footer"
+	sessionKey := "feishu:user-tool-footer"
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s-tool-footer")
 	state := &interactiveState{
@@ -1294,11 +1294,11 @@ func TestProcessInteractiveEvents_ToolSegmentsKeepFinalFooter(t *testing.T) {
 }
 
 func TestProcessInteractiveEvents_DropsStandaloneEllipsisProgress(t *testing.T) {
-	p := &stubPlatformEngine{n: "telegram"}
+	p := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.SetDisplayConfig(DisplayCfg{ThinkingMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500, ToolMessages: true})
 
-	sessionKey := "telegram:user-ellipsis"
+	sessionKey := "feishu:user-ellipsis"
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s-ellipsis")
 	state := &interactiveState{
@@ -1320,10 +1320,10 @@ func TestProcessInteractiveEvents_DropsStandaloneEllipsisProgress(t *testing.T) 
 }
 
 func TestProcessInteractiveEvents_AddsDoneReactionAfterNormalReply(t *testing.T) {
-	p := &stubDoneReactionPlatform{stubPlatformEngine: stubPlatformEngine{n: "dingtalk"}}
+	p := &stubDoneReactionPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 
-	sessionKey := "dingtalk:user-done"
+	sessionKey := "feishu:user-done"
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s-done")
 	state := &interactiveState{
@@ -1366,11 +1366,11 @@ func TestProcessInteractiveEvents_DoesNotAppendReplyFooterWhenDisabled(t *testin
 			}},
 		},
 	}
-	p := &stubPlatformEngine{n: "telegram"}
+	p := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 	e.SetReplyFooterEnabled(false)
 
-	sessionKey := "telegram:user-footer-off"
+	sessionKey := "feishu:user-footer-off"
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s-footer-off")
 	state := &interactiveState{
@@ -1417,11 +1417,11 @@ func TestProcessInteractiveEvents_ReplyFooterPrefersSessionRuntimeState(t *testi
 			}},
 		},
 	}
-	p := &stubPlatformEngine{n: "telegram"}
+	p := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 	e.SetReplyFooterEnabled(true)
 
-	sessionKey := "telegram:user-footer-runtime"
+	sessionKey := "feishu:user-footer-runtime"
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s-footer-runtime")
 	agentSession.model = "gpt-5.4"
@@ -1468,17 +1468,17 @@ func TestProcessInteractiveEvents_ReplyFooterPrefersSessionRuntimeState(t *testi
 // Regression: an agent that only exposes a workdir (no model/effort/usage)
 // must not emit a footer at all. Previously this produced a footer like
 // "*~*" when the agent was running in the user's home directory, which
-// rendered as a bare "~" on Feishu/Weixin.
+// rendered as a bare "~" on Feishu/Feishu.
 func TestProcessInteractiveEvents_SuppressesReplyFooterWhenOnlyWorkDir(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 
 	agent := &stubWorkDirAgent{workDir: homeDir}
-	p := &stubPlatformEngine{n: "telegram"}
+	p := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 	e.SetReplyFooterEnabled(true)
 
-	sessionKey := "telegram:user-footer-workdir-only"
+	sessionKey := "feishu:user-footer-workdir-only"
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s-footer-workdir-only")
 	state := &interactiveState{
@@ -1540,10 +1540,10 @@ func TestProcessInteractiveEvents_HiddenToolProgressKeepsPreviewOnFinalize(t *te
 }
 
 func TestProcessInteractiveEvents_ToolMessagesDisabledSuppressesToolProgressOnly(t *testing.T) {
-	p := &stubPlatformEngine{n: "telegram"}
+	p := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.SetDisplayConfig(DisplayCfg{ThinkingMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500, ToolMessages: false})
-	sessionKey := "telegram:user1"
+	sessionKey := "feishu:user1"
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s1")
 	state := &interactiveState{
@@ -2956,7 +2956,7 @@ func TestSendPermissionPrompt_CardPlatform(t *testing.T) {
 
 func TestSendPermissionPrompt_InlineButtonPlatform(t *testing.T) {
 	e := newTestEngine()
-	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 
 	e.sendPermissionPrompt(p, "ctx", "full prompt text", "write_file", "/tmp/test.txt")
 
@@ -3012,7 +3012,7 @@ func TestCmdList_MultiWorkspaceUsesWorkspaceSessions(t *testing.T) {
 	}
 	ws.sessions = NewSessionManager("")
 
-	msg := &Message{SessionKey: "slack:" + channelID + ":U1", ReplyCtx: "ctx"}
+	msg := &Message{SessionKey: "feishu:" + channelID + ":U1", ReplyCtx: "ctx"}
 	e.cmdList(p, msg, nil)
 
 	if len(p.sent) == 0 {
@@ -3037,7 +3037,7 @@ func TestHandlePendingPermission_MultiWorkspaceLookup(t *testing.T) {
 	channelID := "C123"
 	e.workspaceBindings.Bind("project:test", channelID, "chan", wsDir)
 
-	sessionKey := "slack:" + channelID + ":U1"
+	sessionKey := "feishu:" + channelID + ":U1"
 	// interactiveKeyForSessionKey resolves symlinks, so use the normalized path
 	interactiveKey := normalizeWorkspacePath(wsDir) + ":" + sessionKey
 
@@ -3092,7 +3092,7 @@ func TestHandlePendingPermission_MultiWorkspaceLookup(t *testing.T) {
 	}
 }
 
-// Regression for the Discord thread_isolation + multi-workspace auto-bind
+// Regression for the Feishu thread_isolation + multi-workspace auto-bind
 // path: workspace binding is keyed by the *parent* channel ID, but the
 // sessionKey driving follow-up lookups is the *thread* ID.
 //
@@ -3114,11 +3114,11 @@ func TestSessionContextForKey_RecoversWorkspaceFromLiveState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	threadSessionKey := "discord:T-thread"
+	threadSessionKey := "feishu:T-thread"
 	storedKey := normalizeWorkspacePath(wsDir) + ":" + threadSessionKey
 
 	// Live state is keyed under the workspace prefix but no binding exists
-	// for the thread channel — exactly the Discord thread_isolation shape.
+	// for the thread channel — exactly the Feishu thread_isolation shape.
 	e.interactiveMu.Lock()
 	e.interactiveStates[storedKey] = &interactiveState{}
 	e.interactiveMu.Unlock()
@@ -3142,12 +3142,12 @@ func TestInteractiveKeyForSessionKey_RecoversByLiveStateScan(t *testing.T) {
 	parentChannel := "C-parent"
 	threadID := "T-thread"
 	// Bind the workspace under the *parent* channel — mirrors what the
-	// Discord platform does when thread_isolation is on.
-	e.workspaceBindings.Bind("project:test", "discord:"+parentChannel, "chan", wsDir)
+	// Feishu platform does when thread_isolation is on.
+	e.workspaceBindings.Bind("project:test", "feishu:"+parentChannel, "chan", wsDir)
 
 	// Live interactive state is stored under the workspace-prefixed thread
 	// session key, exactly how processInteractiveMessageWith would key it.
-	threadSessionKey := "discord:" + threadID
+	threadSessionKey := "feishu:" + threadID
 	storedInteractiveKey := normalizeWorkspacePath(wsDir) + ":" + threadSessionKey
 	e.interactiveMu.Lock()
 	e.interactiveStates[storedInteractiveKey] = &interactiveState{}
@@ -3172,8 +3172,8 @@ func TestInteractiveKeyForSessionKey_PrefersCurrentBindingOverStaleState(t *test
 	e.SetMultiWorkspace(t.TempDir(), bindingPath)
 
 	channelID := "C1"
-	sessionKey := "slack:" + channelID + ":U1"
-	e.workspaceBindings.Bind("project:test", "slack:"+channelID, "chan", wsBound)
+	sessionKey := "feishu:" + channelID + ":U1"
+	e.workspaceBindings.Bind("project:test", "feishu:"+channelID, "chan", wsBound)
 
 	// Stale state from before rebinding is still in the map.
 	staleKey := normalizeWorkspacePath(wsStale) + ":" + sessionKey
@@ -3199,15 +3199,15 @@ func TestFindInteractiveKeyForSession(t *testing.T) {
 		expected string
 	}{
 		{"empty-query", []string{}, "", ""},
-		{"no-matches", []string{"/ws:slack:C1:U1"}, "discord:T1", ""},
-		{"exact-match", []string{"slack:C1:U1"}, "slack:C1:U1", "slack:C1:U1"},
-		{"suffix-match", []string{"/ws:discord:T1"}, "discord:T1", "/ws:discord:T1"},
-		{"first-of-multiple", []string{"/wsA:discord:T1", "/wsB:slack:C1:U1"}, "slack:C1:U1", "/wsB:slack:C1:U1"},
+		{"no-matches", []string{"/ws:feishu:C1:U1"}, "feishu:T1", ""},
+		{"exact-match", []string{"feishu:C1:U1"}, "feishu:C1:U1", "feishu:C1:U1"},
+		{"suffix-match", []string{"/ws:feishu:T1"}, "feishu:T1", "/ws:feishu:T1"},
+		{"first-of-multiple", []string{"/wsA:feishu:T1", "/wsB:feishu:C1:U1"}, "feishu:C1:U1", "/wsB:feishu:C1:U1"},
 		// Precedence: exact key beats suffix-matched workspace-prefixed key.
 		// Without this, map iteration order would be visible to callers, making
 		// /stop and pending-permission routing non-deterministic when both
 		// raw and workspace-prefixed states coexist.
-		{"exact-beats-prefixed", []string{"slack:C1:U1", "/ws:slack:C1:U1"}, "slack:C1:U1", "slack:C1:U1"},
+		{"exact-beats-prefixed", []string{"feishu:C1:U1", "/ws:feishu:C1:U1"}, "feishu:C1:U1", "feishu:C1:U1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3226,7 +3226,7 @@ func TestFindInteractiveKeyForSession(t *testing.T) {
 }
 
 func TestHandleMessage_MultiWorkspacePreservesCCSessionKey(t *testing.T) {
-	p := &stubPlatformEngine{n: "discord"}
+	p := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 
 	baseDir := t.TempDir()
@@ -3247,8 +3247,8 @@ func TestHandleMessage_MultiWorkspacePreservesCCSessionKey(t *testing.T) {
 	ws.sessions = NewSessionManager("")
 
 	msg := &Message{
-		SessionKey: "discord:" + channelID + ":U1",
-		Platform:   "discord",
+		SessionKey: "feishu:" + channelID + ":U1",
+		Platform:   "feishu",
 		UserID:     "U1",
 		UserName:   "user",
 		Content:    "hello",
@@ -3398,8 +3398,8 @@ func TestHandleMessage_AutoResetOnIdle_DoesNotRotateFreshSession(t *testing.T) {
 		t.Fatalf("active session = %s, want unchanged %s", active.ID, session.ID)
 	}
 	sent := p.getSent()
-	for _, line := range sent {
-		if strings.Contains(line, "Session auto-reset") {
+	for _, feishu := range sent {
+		if strings.Contains(feishu, "Session auto-reset") {
 			t.Fatalf("unexpected auto-reset notice in replies: %v", sent)
 		}
 	}
@@ -3499,8 +3499,8 @@ func TestHandleMessage_AutoResetOnIdle_DoesNotTriggerForSlashCommand(t *testing.
 	if active.ID != session.ID {
 		t.Fatalf("active session = %s, want unchanged %s", active.ID, session.ID)
 	}
-	for _, line := range p.getSent() {
-		if strings.Contains(line, "Session auto-reset") {
+	for _, feishu := range p.getSent() {
+		if strings.Contains(feishu, "Session auto-reset") {
 			t.Fatalf("unexpected auto-reset notice for slash command: %v", p.getSent())
 		}
 	}
@@ -4103,7 +4103,7 @@ func TestDeleteMode_SubmitReportsMissingSelectedSessions(t *testing.T) {
 	pushedCard := refreshed[len(refreshed)-1]
 	resultText := pushedCard.RenderText()
 	if !strings.Contains(resultText, "Session deleted: One") {
-		t.Fatalf("result text = %q, want deleted session line", resultText)
+		t.Fatalf("result text = %q, want deleted session feishu", resultText)
 	}
 	if !strings.Contains(resultText, "Missing selected session") || !strings.Contains(resultText, "session-3") {
 		t.Fatalf("result text = %q, want missing selected session to be reported", resultText)
@@ -6358,7 +6358,7 @@ func TestSendAskQuestionPrompt_CardPlatform_MultiQuestion_ShowsIndex(t *testing.
 
 func TestSendAskQuestionPrompt_InlineButtonPlatform(t *testing.T) {
 	e := newTestEngine()
-	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	e.sendAskQuestionPrompt(p, "ctx", testQuestions(), 0)
 
 	if len(p.buttonRows) != 3 {
@@ -8043,7 +8043,7 @@ func (p *permSignalInlinePlatform) SendWithButtons(ctx context.Context, replyCtx
 func TestProcessInteractiveEvents_PermissionWhileSendBlocked(t *testing.T) {
 	permAllowSent := make(chan struct{}, 1)
 	p := &permSignalInlinePlatform{
-		stubInlineButtonPlatform: stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}},
+		stubInlineButtonPlatform: stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}},
 		permAllowSent:            permAllowSent,
 	}
 	sess := newBlockingSendSession("blk-perm")
@@ -8608,7 +8608,7 @@ func TestProcessInteractiveEvents_QueuedMessageUsesItsOwnReplyCtx(t *testing.T) 
 //
 // Unlike the inner-drain test, this one goes through the full
 // ReceiveMessage → handleMessage → processInteractiveMessageWith →
-// processInteractiveEvents → drainPendingMessages pipeline so any
+// processInteractiveEvents → drainPendingMessages pipefeishu so any
 // state-handling bug at any layer surfaces.
 func TestIssue814_QueuedMessageAfterCleanEventResult_UsesOwnReplyCtx(t *testing.T) {
 	p := &replyCtxRecordingPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
@@ -9137,7 +9137,7 @@ func TestQueueMessage_NilAgentSession_DuringStartup(t *testing.T) {
 // (e.g. by max_turn_time_mins) the cleanup path may leave an interactive
 // state in the map with agentSession==nil. A subsequent message routed to
 // that state must NOT panic with a nil-pointer deref at the old engine.go
-// v1.3.2 line 2164 site (drainEvents(state.agentSession.Events())) —
+// v1.3.2 feishu 2164 site (drainEvents(state.agentSession.Events())) —
 // processInteractiveMessageWith should detect the nil state, send a
 // user-visible failure reply, and return cleanly.
 func TestProcessInteractiveMessageWith_NilAgentSession_NoPanic(t *testing.T) {
@@ -9158,7 +9158,7 @@ func TestProcessInteractiveMessageWith_NilAgentSession_NoPanic(t *testing.T) {
 	// First call: agent.StartSession fails, leaving state.agentSession == nil.
 	// The nil guard at engine.go:2851 must send a failure reply and return
 	// without panicking. This branch protects against the v1.3.2 panic at
-	// the old line 2164.
+	// the old feishu 2164.
 	done := make(chan struct{})
 	go func() {
 		defer func() {
@@ -9967,8 +9967,8 @@ func TestHandleMessageBusyRecalledCurrentStopsAndProcessesNewMessage(t *testing.
 	if len(sent) == 0 || sent[0] != "new message processed" {
 		t.Fatalf("sent = %v, want new message processed", sent)
 	}
-	for _, line := range sent {
-		if strings.Contains(line, e.i18n.T(MsgMessageQueued)) {
+	for _, feishu := range sent {
+		if strings.Contains(feishu, e.i18n.T(MsgMessageQueued)) {
 			t.Fatalf("unexpected queued reply after recalled active message: %v", sent)
 		}
 	}
@@ -10109,7 +10109,7 @@ func TestBuildSenderPrompt_EmptyUserID(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hello", "", "Bob", "telegram", "telegram:ch:user1", "")
+	result := e.buildSenderPrompt("hello", "", "Bob", "feishu", "feishu:ch:user1", "")
 	if result != "hello" {
 		t.Fatalf("expected raw content when userID is empty, got %q", result)
 	}
@@ -10130,8 +10130,8 @@ func TestBuildSenderPrompt_NameWithSpaces(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hi", "U999", "Jim Tang", "slack", "slack:C012:U999", "")
-	expected := "[cc-connect sender_id=U999 sender_name=\"Jim Tang\" platform=slack chat_id=C012]\nhi"
+	result := e.buildSenderPrompt("hi", "U999", "Jim Tang", "feishu", "feishu:C012:U999", "")
+	expected := "[cc-connect sender_id=U999 sender_name=\"Jim Tang\" platform=feishu chat_id=C012]\nhi"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
 	}
@@ -10143,17 +10143,17 @@ func TestExtractChannelID(t *testing.T) {
 		want string
 	}{
 		{"feishu:channel42:user1", "channel42"},
-		{"telegram:group123:user2", "group123"},
+		{"feishu:group123:user2", "group123"},
 		{"plain", ""},
 		{"a:b", "b"},
 		{"a:bb:c:d", "bb"},
-		{"dingtalk:g:cidXXX:staff1", "cidXXX"},
-		{"dingtalk:d:cidYYY:staff2", "cidYYY"},
+		{"feishu:g:cidXXX:staff1", "cidXXX"},
+		{"feishu:d:cidYYY:staff2", "cidYYY"},
 		// 3-segment shared-session keys with single-char type tag — used by
-		// dingtalk/qq/qqbot when share_session_in_channel is enabled.
-		{"dingtalk:g:cidZZZ", "cidZZZ"},
-		{"qq:g:12345", "12345"},
-		{"qqbot:g:openid_abc", "openid_abc"},
+		// feishu/feishu/feishu when share_session_in_channel is enabled.
+		{"feishu:g:cidZZZ", "cidZZZ"},
+		{"feishu:g:12345", "12345"},
+		{"feishu:g:openid_abc", "openid_abc"},
 	}
 	for _, tt := range tests {
 		got := extractChannelID(tt.key)
@@ -10172,9 +10172,9 @@ func TestBuildSenderPrompt_DifferentPlatforms(t *testing.T) {
 		sessionKey string
 		wantChat   string
 	}{
-		{"telegram", "telegram:group99:alice", "group99"},
-		{"discord", "discord:server1:bob", "server1"},
-		{"slack", "slack:C012345:carol", "C012345"},
+		{"feishu", "feishu:group99:alice", "group99"},
+		{"feishu", "feishu:server1:bob", "server1"},
+		{"feishu", "feishu:C012345:carol", "C012345"},
 	}
 	for _, tc := range platforms {
 		result := e.buildSenderPrompt("msg", "uid", "TestUser", tc.platform, tc.sessionKey, "")
@@ -10191,7 +10191,7 @@ func TestBuildSenderPrompt_SanitizesSpecialChars(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hi", "U1", "Evil\"Name\nInject", "slack", "slack:C1:U1", "")
+	result := e.buildSenderPrompt("hi", "U1", "Evil\"Name\nInject", "feishu", "feishu:C1:U1", "")
 	if strings.Contains(result, `"Name`) || strings.Contains(result, "\n"+`Inject`) {
 		t.Fatalf("quotes/newlines should be sanitized, got %q", result)
 	}
@@ -10205,9 +10205,9 @@ func TestBuildSenderPrompt_ChannelKeyOverridesSessionKey(t *testing.T) {
 	e.SetInjectSender(true)
 
 	// When channelKey is provided, it should be used as chat_id instead of
-	// extracting from sessionKey (which would give "g" for dingtalk).
-	result := e.buildSenderPrompt("hello", "staff1", "Alice", "dingtalk", "dingtalk:g:cidXXX:staff1", "cidXXX")
-	expected := "[cc-connect sender_id=staff1 sender_name=\"Alice\" platform=dingtalk chat_id=cidXXX]\nhello"
+	// extracting from sessionKey (which would give "g" for feishu).
+	result := e.buildSenderPrompt("hello", "staff1", "Alice", "feishu", "feishu:g:cidXXX:staff1", "cidXXX")
+	expected := "[cc-connect sender_id=staff1 sender_name=\"Alice\" platform=feishu chat_id=cidXXX]\nhello"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
 	}
@@ -10219,8 +10219,8 @@ func TestBuildSenderPrompt_FallbackWithoutChannelKey(t *testing.T) {
 
 	// When channelKey is empty, extractChannelID heuristic should detect
 	// the 4-segment format and extract the correct channel.
-	result := e.buildSenderPrompt("hello", "staff1", "Alice", "dingtalk", "dingtalk:g:cidXXX:staff1", "")
-	expected := "[cc-connect sender_id=staff1 sender_name=\"Alice\" platform=dingtalk chat_id=cidXXX]\nhello"
+	result := e.buildSenderPrompt("hello", "staff1", "Alice", "feishu", "feishu:g:cidXXX:staff1", "")
+	expected := "[cc-connect sender_id=staff1 sender_name=\"Alice\" platform=feishu chat_id=cidXXX]\nhello"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
 	}
@@ -10842,6 +10842,27 @@ func TestRunShellWithProgress_NonexistentCommand(t *testing.T) {
 
 // --- /diff command tests ---
 
+func tempGitRepoDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "cc-connect-git-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			if err := os.RemoveAll(dir); err == nil || os.IsNotExist(err) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("cleanup temp git repo %s: %v", dir, err)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
+	return dir
+}
+
 func TestCmdDiff_BlockedWithoutAdmin(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
@@ -10869,7 +10890,7 @@ func TestCmdDiff_BlockedWithoutAdmin(t *testing.T) {
 
 func TestCmdDiff_EmptyDiff(t *testing.T) {
 	// Create a temp git repo with no changes
-	dir := t.TempDir()
+	dir := tempGitRepoDir(t)
 	cmds := [][]string{
 		{"git", "init"},
 		{"git", "config", "user.email", "test@test.com"},
@@ -10922,7 +10943,7 @@ func TestCmdDiff_EmptyDiff(t *testing.T) {
 
 func TestCmdDiff_PlainTextFallback(t *testing.T) {
 	// Create a temp git repo with uncommitted changes
-	dir := t.TempDir()
+	dir := tempGitRepoDir(t)
 	cmds := [][]string{
 		{"git", "init"},
 		{"git", "config", "user.email", "test@test.com"},
@@ -10992,7 +11013,7 @@ func TestCmdDiff_PlainTextFallback(t *testing.T) {
 
 func TestCmdDiff_FileSenderPath(t *testing.T) {
 	// Create a temp git repo with uncommitted changes
-	dir := t.TempDir()
+	dir := tempGitRepoDir(t)
 	cmds := [][]string{
 		{"git", "init"},
 		{"git", "config", "user.email", "test@test.com"},
@@ -12128,11 +12149,11 @@ func TestCmdMemory_Help(t *testing.T) {
 
 func TestCmdWhoami_ShowsUserID(t *testing.T) {
 	e := newTestEngine()
-	p := &stubPlatformEngine{n: "telegram"}
+	p := &stubPlatformEngine{n: "feishu"}
 
 	msg := &Message{
-		SessionKey: "telegram:chat123:user456",
-		Platform:   "telegram",
+		SessionKey: "feishu:chat123:user456",
+		Platform:   "feishu",
 		UserID:     "user456",
 		UserName:   "Alice",
 		ReplyCtx:   "ctx",
@@ -12150,8 +12171,8 @@ func TestCmdWhoami_ShowsUserID(t *testing.T) {
 	if !strings.Contains(reply, "Alice") {
 		t.Errorf("expected reply to contain user name 'Alice', got: %s", reply)
 	}
-	if !strings.Contains(reply, "telegram") {
-		t.Errorf("expected reply to contain platform 'telegram', got: %s", reply)
+	if !strings.Contains(reply, "feishu") {
+		t.Errorf("expected reply to contain platform 'feishu', got: %s", reply)
 	}
 	if !strings.Contains(reply, "chat123") {
 		t.Errorf("expected reply to contain chat ID 'chat123', got: %s", reply)
@@ -12276,7 +12297,7 @@ func TestCmdWhoami_CardPlatform(t *testing.T) {
 func TestEngine_AddPlatform(t *testing.T) {
 	agent := &stubAgent{}
 	p1 := &stubPlatformEngine{n: "feishu"}
-	p2 := &stubPlatformEngine{n: "telegram"}
+	p2 := &stubPlatformEngine{n: "feishu"}
 
 	e := NewEngine("test", agent, []Platform{p1}, "", LangEnglish)
 
@@ -12295,8 +12316,8 @@ func TestEngine_AddPlatform(t *testing.T) {
 	if e.platforms[0].Name() != "feishu" {
 		t.Errorf("expected first platform to be feishu, got %s", e.platforms[0].Name())
 	}
-	if e.platforms[1].Name() != "telegram" {
-		t.Errorf("expected second platform to be telegram, got %s", e.platforms[1].Name())
+	if e.platforms[1].Name() != "feishu" {
+		t.Errorf("expected second platform to be feishu, got %s", e.platforms[1].Name())
 	}
 }
 
@@ -12564,12 +12585,12 @@ func TestSynthesizedTTSReply_ErrorWhenProviderMissing(t *testing.T) {
 
 func TestSynthesizedTTSReply_ErrorWhenPlatformCannotSendAudio(t *testing.T) {
 	tts := &recordingTTS{}
-	p := &stubPlatformEngine{n: "discord"}
+	p := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("assistant", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.SetTTSConfig(&TTSCfg{Enabled: true, TTS: tts})
 
 	err := e.synthesizeAndSendTTS(p, "ctx", "hello")
-	if err == nil || !strings.Contains(err.Error(), "platform discord does not support audio sending") {
+	if err == nil || !strings.Contains(err.Error(), "platform feishu does not support audio sending") {
 		t.Fatalf("error = %v, want unsupported audio sender error", err)
 	}
 	_, _, calls := tts.snapshot()
@@ -12703,8 +12724,8 @@ func TestEngine_AddPlatform_Multiple(t *testing.T) {
 	p1 := &stubPlatformEngine{n: "feishu"}
 	e := NewEngine("test", agent, []Platform{p1}, "", LangEnglish)
 
-	p2 := &stubPlatformEngine{n: "telegram"}
-	p3 := &stubPlatformEngine{n: "discord"}
+	p2 := &stubPlatformEngine{n: "feishu"}
+	p3 := &stubPlatformEngine{n: "feishu"}
 
 	e.AddPlatform(p2)
 	e.AddPlatform(p3)
@@ -12723,7 +12744,7 @@ func TestExecuteCronJob_ResolvesCronReplyTarget(t *testing.T) {
 	scheduler := NewCronScheduler(store)
 
 	platform := &stubCronReplyTargetPlatform{
-		stubPlatformEngine: stubPlatformEngine{n: "discord"},
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 	}
 	agentSession := newResultAgentSession("cron complete")
 	agent := &resultAgent{session: agentSession}
@@ -12734,7 +12755,7 @@ func TestExecuteCronJob_ResolvesCronReplyTarget(t *testing.T) {
 
 	job := &CronJob{
 		ID:          "job-1",
-		SessionKey:  "discord:channel-1:user-1",
+		SessionKey:  "feishu:channel-1:user-1",
 		Prompt:      "summarize activity",
 		Description: "Daily summary",
 	}
@@ -12745,7 +12766,7 @@ func TestExecuteCronJob_ResolvesCronReplyTarget(t *testing.T) {
 	if err := e.ExecuteCronJob(job); err != nil {
 		t.Fatalf("ExecuteCronJob() error = %v", err)
 	}
-	if platform.resolvedSessionKey != "discord:channel-1:user-1" {
+	if platform.resolvedSessionKey != "feishu:channel-1:user-1" {
 		t.Fatalf("ResolveCronReplyTarget sessionKey = %q, want base session key", platform.resolvedSessionKey)
 	}
 	if platform.resolveTitle != "Daily summary" {
@@ -12763,17 +12784,17 @@ func TestExecuteCronJob_ResolvesCronReplyTarget(t *testing.T) {
 		t.Fatalf("sent[1] = %q, want final result", sent[1])
 	}
 
-	if got := len(e.sessions.ListSessions("discord:thread-fresh")); got != 0 {
+	if got := len(e.sessions.ListSessions("feishu:thread-fresh")); got != 0 {
 		t.Fatalf("fresh session count = %d, want 0 for reuse mode", got)
 	}
-	if got := len(e.sessions.ListSessions("discord:channel-1:user-1")); got != 1 {
+	if got := len(e.sessions.ListSessions("feishu:channel-1:user-1")); got != 1 {
 		t.Fatalf("base session count = %d, want 1", got)
 	}
-	if job.SessionKey != "discord:channel-1:user-1" {
+	if job.SessionKey != "feishu:channel-1:user-1" {
 		t.Fatalf("job.SessionKey = %q, want unchanged base session key", job.SessionKey)
 	}
 	stored := store.Get("job-1")
-	if stored == nil || stored.SessionKey != "discord:channel-1:user-1" {
+	if stored == nil || stored.SessionKey != "feishu:channel-1:user-1" {
 		t.Fatalf("stored sessionKey = %#v, want unchanged base session key", stored)
 	}
 
@@ -12791,7 +12812,7 @@ func TestExecuteCronJob_WorkspacePrefixedSessionKey(t *testing.T) {
 	scheduler := NewCronScheduler(store)
 
 	platform := &stubCronReplyTargetPlatform{
-		stubPlatformEngine: stubPlatformEngine{n: "slack"},
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 	}
 	agentSession := newResultAgentSession("done")
 	agent := &resultAgent{session: agentSession}
@@ -12802,7 +12823,7 @@ func TestExecuteCronJob_WorkspacePrefixedSessionKey(t *testing.T) {
 
 	// Simulate a session key that was stored with a workspace prefix
 	// (as happens in multi-workspace mode).
-	prefixedKey := "/home/user/workspace/myproject:slack:C123:U456"
+	prefixedKey := "/home/user/workspace/myproject:feishu:C123:U456"
 	job := &CronJob{
 		ID:          "job-ws",
 		SessionKey:  prefixedKey,
@@ -12872,7 +12893,7 @@ func TestExecuteCronJob_ExpandsSlashSkillPrompt(t *testing.T) {
 			}
 
 			platform := &stubCronReplyTargetPlatform{
-				stubPlatformEngine: stubPlatformEngine{n: "discord"},
+				stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 			}
 			agentSession := newResultAgentSession("ok")
 			agent := &resultAgent{session: agentSession}
@@ -12883,7 +12904,7 @@ func TestExecuteCronJob_ExpandsSlashSkillPrompt(t *testing.T) {
 
 			job := &CronJob{
 				ID:         "job-skill",
-				SessionKey: "discord:channel-1:user-1",
+				SessionKey: "feishu:channel-1:user-1",
 				Prompt:     tt.prompt,
 			}
 			if err := store.Add(job); err != nil {
@@ -12924,14 +12945,14 @@ func TestExtractSessionKeyParts(t *testing.T) {
 		wantUser     string
 	}{
 		{"full format", "feishu:channel123:user456", "feishu", "channel123", "feishu:channel123", "user456"},
-		{"platform and channel only", "telegram:987654321", "telegram", "987654321", "telegram:987654321", ""},
+		{"platform and channel only", "feishu:987654321", "feishu", "987654321", "feishu:987654321", ""},
 		{"no colons", "simplekey", "simplekey", "", "", ""},
-		{"single colon", "discord:channel1", "discord", "channel1", "discord:channel1", ""},
+		{"single colon", "feishu:channel1", "feishu", "channel1", "feishu:channel1", ""},
 		{"empty string", "", "", "", "", ""},
-		{"just platform colon user", "line::user1", "line", "", "", "user1"},
-		{"four-segment with type tag", "dingtalk:g:cidXXX:staff1", "dingtalk", "cidXXX", "dingtalk:cidXXX", "staff1"},
-		{"three-segment with type tag (shared session)", "dingtalk:g:cidZZZ", "dingtalk", "cidZZZ", "dingtalk:cidZZZ", ""},
-		{"three-segment qq group", "qq:g:12345", "qq", "12345", "qq:12345", ""},
+		{"just platform colon user", "feishu::user1", "feishu", "", "", "user1"},
+		{"four-segment with type tag", "feishu:g:cidXXX:staff1", "feishu", "cidXXX", "feishu:cidXXX", "staff1"},
+		{"three-segment with type tag (shared session)", "feishu:g:cidZZZ", "feishu", "cidZZZ", "feishu:cidZZZ", ""},
+		{"three-segment feishu group", "feishu:g:12345", "feishu", "12345", "feishu:12345", ""},
 	}
 
 	for _, tt := range tests {
@@ -12961,7 +12982,7 @@ func TestExtractSessionKeyParts(t *testing.T) {
 
 func TestSetObserveConfig(t *testing.T) {
 	e := NewEngine("test", &stubAgent{}, nil, "", LangEnglish)
-	e.SetObserveConfig("/tmp/test-project", "slack:C123:U456")
+	e.SetObserveConfig("/tmp/test-project", "feishu:C123:U456")
 	if !e.observeEnabled {
 		t.Fatal("observe should be enabled")
 	}
@@ -12970,25 +12991,25 @@ func TestSetObserveConfig(t *testing.T) {
 	}
 }
 
-func TestObserveStartsOnlyWithSlack(t *testing.T) {
-	stub := &stubPlatformWithObserve{stubPlatform: stubPlatform{n: "slack"}}
+func TestObserveStartsOnlyWithFeishu(t *testing.T) {
+	stub := &stubPlatformWithObserve{stubPlatform: stubPlatform{n: "feishu"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{stub}, "", LangEnglish)
-	e.SetObserveConfig("/tmp/fake-project", "slack:C123:U456")
+	e.SetObserveConfig("/tmp/fake-project", "feishu:C123:U456")
 
 	target := e.findObserverTarget()
 	if target == nil {
-		t.Fatal("expected to find observer target for Slack")
+		t.Fatal("expected to find observer target for Feishu")
 	}
 }
 
-func TestObserveNoTargetWithoutSlack(t *testing.T) {
-	stub := &stubPlatform{n: "telegram"}
+func TestObserveNoTargetWithoutFeishu(t *testing.T) {
+	stub := &stubPlatform{n: "feishu"}
 	e := NewEngine("test", &stubAgent{}, []Platform{stub}, "", LangEnglish)
-	e.SetObserveConfig("/tmp/fake-project", "slack:C123:U456")
+	e.SetObserveConfig("/tmp/fake-project", "feishu:C123:U456")
 
 	target := e.findObserverTarget()
 	if target != nil {
-		t.Fatal("expected no observer target without Slack")
+		t.Fatal("expected no observer target without Feishu")
 	}
 }
 
@@ -13003,7 +13024,7 @@ func (s *stubPlatformWithObserve) SendObservation(_ context.Context, _, _ string
 // --- Instant Reply tests ---
 
 // stubStreamingCardPlatform simulates a platform that supports StreamingCardPlatform
-// (e.g. DingTalk with AI Card configured), so instant reply should be skipped.
+// (e.g. Feishu with AI Card configured), so instant reply should be skipped.
 type stubStreamingCardPlatform struct {
 	stubPlatformEngine
 	cardCreated bool
@@ -13142,15 +13163,15 @@ func TestHandleMessage_InstantReply_SkippedWhenDisabled(t *testing.T) {
 }
 
 func TestHandleMessage_InstantReply_SkippedForStreamingCardPlatform(t *testing.T) {
-	p := &stubStreamingCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "dingtalk"}}
+	p := &stubStreamingCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	agentSession := newResultAgentSession("agent reply")
 	agent := &resultAgent{session: agentSession}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 	e.SetInstantReply(InstantReplyCfg{Enabled: true, Content: "🤔 Thinking..."})
 
 	msg := &Message{
-		SessionKey: "dingtalk:user1",
-		Platform:   "dingtalk",
+		SessionKey: "feishu:user1",
+		Platform:   "feishu",
 		UserID:     "u1",
 		UserName:   "user",
 		Content:    "hello",
@@ -13172,7 +13193,7 @@ func TestHandleMessage_InstantReply_SkippedForStreamingCardPlatform(t *testing.T
 
 func TestHandleMessage_InstantReply_SentWhenStreamingCardFails(t *testing.T) {
 	p := &stubStreamingCardPlatform{
-		stubPlatformEngine: stubPlatformEngine{n: "dingtalk"},
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 		cardFail:           true,
 	}
 	agentSession := newResultAgentSession("agent reply")
@@ -13181,8 +13202,8 @@ func TestHandleMessage_InstantReply_SentWhenStreamingCardFails(t *testing.T) {
 	e.SetInstantReply(InstantReplyCfg{Enabled: true, Content: "🤔 Thinking..."})
 
 	msg := &Message{
-		SessionKey: "dingtalk:user1",
-		Platform:   "dingtalk",
+		SessionKey: "feishu:user1",
+		Platform:   "feishu",
 		UserID:     "u1",
 		UserName:   "user",
 		Content:    "hello",
@@ -13711,10 +13732,10 @@ func TestStripTrailingSilent(t *testing.T) {
 		want   string
 		wantOK bool
 	}{
-		{"trailing on new line", "Hello\nNO_REPLY", "Hello", true},
-		{"trailing lowercase on new line", "Hello\nno_reply", "Hello", true},
+		{"trailing on new feishu", "Hello\nNO_REPLY", "Hello", true},
+		{"trailing lowercase on new feishu", "Hello\nno_reply", "Hello", true},
 		{"trailing after space", "Some reasoning here NO_REPLY", "Some reasoning here", true},
-		{"multi-line then marker", "Line1\nLine2\nNO_REPLY", "Line1\nLine2", true},
+		{"multi-feishu then marker", "Line1\nLine2\nNO_REPLY", "Line1\nLine2", true},
 		{"trailing with markdown emphasis", "Done. *NO_REPLY*", "Done. *NO_REPLY*", false},
 		{"trailing preceded by asterisks", "Done.**NO_REPLY", "Done.", true},
 		{"trailing with crlf", "Hello\r\nNO_REPLY", "Hello", true},
@@ -14739,7 +14760,7 @@ func TestMaybeAutoResetSessionOnIdle_NotFiredWhenUserActivityRecent(t *testing.T
 
 // TestHandlePendingPermission_StalePermissionCallback_Dropped verifies that
 // permission-callback messages synthesized by inline-button / card-action paths
-// (Telegram callback_query, Feishu card_action, QQBot interaction button, and
+// (Feishu callback_query, Feishu card_action, and
 // the bridge web admin card_action) are silently dropped when there is no
 // matching interactive state or pending request — instead of letting the
 // literal "allow" / "deny" string reach the agent's prompt stream. Plain
@@ -14837,11 +14858,11 @@ func TestHandlePendingPermission_StalePermissionCallback_Dropped(t *testing.T) {
 }
 
 // ─── Permission keyword tokenization (t-20260614-ayc85z) ────────────────
-// Group-chat platforms (wecom in particular) require the user to
+// Group-chat platforms (feishu in particular) require the user to
 // @mention the bot for the message to reach cc-connect, so permission
 // replies arrive as "@bot 允许" / "允许 @bot" / etc. rather than the
 // bare keyword. The matchers must tolerate the surrounding mention
-// without losing word-boundary discipline (e.g. must NOT match
+// without losing word-boundary discipfeishu (e.g. must NOT match
 // "禁止允许这种" — the keyword is embedded inside another CJK word).
 
 func TestIsAllowResponse_WithLeadingMention(t *testing.T) {
@@ -14893,8 +14914,8 @@ func TestIsAllowResponse_WithMultipleMentions(t *testing.T) {
 func TestIsAllowResponse_NotInsideOtherWord(t *testing.T) {
 	cases := []string{
 		"禁止允许这种",
-		"不允许这样",   // "不允许" has its own deny entry, but as part of "不允许这样" the user clearly is denying / negating, never allowing.
-		"我不太允许这件事", // long sentence, no token equals "允许"
+		"不允许这样",                            // "不允许" has its own deny entry, but as part of "不允许这样" the user clearly is denying / negating, never allowing.
+		"我不太允许这件事",                         // long sentence, no token equals "允许"
 		"please don't allowall the things", // FieldsFunc keeps "allowall" intact, but it is the approveAll single-token form, not allow.
 		"hello world",
 		"",
@@ -14922,7 +14943,7 @@ func TestIsDenyResponse_WithMention(t *testing.T) {
 	}
 
 	negatives := []string{
-		"拒绝症患者",       // embedded — must not match
+		"拒绝症患者",        // embedded — must not match
 		"我们都不应该 hello", // unrelated
 	}
 	for _, s := range negatives {
@@ -14962,8 +14983,8 @@ func TestIsApproveAllResponse_MultiWordWithMention(t *testing.T) {
 }
 
 // TestHandlePendingPermission_AllowWithMention is the integration
-// regression for the wecom group bug: a real Bash permission request is
-// pending, and the user replies with "@产品经理 允许" exactly as wecom
+// regression for the feishu group bug: a real Bash permission request is
+// pending, and the user replies with "@产品经理 允许" exactly as feishu
 // delivers it. Before the fix this fell through to the "still waiting"
 // branch and the agent never advanced.
 func TestHandlePendingPermission_AllowWithMention(t *testing.T) {
@@ -14971,7 +14992,7 @@ func TestHandlePendingPermission_AllowWithMention(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	rec := &recordingAgentSession{}
 
-	iKey := "wecom:group:user1"
+	iKey := "feishu:group:user1"
 	pending := &pendingPermission{
 		RequestID: "req-bash-1",
 		ToolName:  "Bash",
@@ -14988,7 +15009,7 @@ func TestHandlePendingPermission_AllowWithMention(t *testing.T) {
 	e.interactiveMu.Unlock()
 
 	msg := &Message{
-		SessionKey: "wecom:group:user1",
+		SessionKey: "feishu:group:user1",
 		UserID:     "user1",
 		Content:    "@产品经理 允许",
 		ReplyCtx:   "ctx",
@@ -15016,7 +15037,7 @@ func TestHandlePendingPermission_ApproveAllWithMention(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	rec := &recordingAgentSession{}
 
-	iKey := "wecom:group:user2"
+	iKey := "feishu:group:user2"
 	pending := &pendingPermission{
 		RequestID: "req-bash-2",
 		ToolName:  "Bash",
@@ -15034,7 +15055,7 @@ func TestHandlePendingPermission_ApproveAllWithMention(t *testing.T) {
 	e.interactiveMu.Unlock()
 
 	msg := &Message{
-		SessionKey: "wecom:group:user2",
+		SessionKey: "feishu:group:user2",
 		UserID:     "user2",
 		Content:    "@产品经理 允许所有",
 		ReplyCtx:   "ctx",
@@ -15060,7 +15081,7 @@ func TestHandlePendingPermission_ApproveAllWithMention(t *testing.T) {
 // `cc-connect send --audio` / `--video` must reach AudioSender /
 // VideoSender — NOT SendFile. PR #1202 made the CLI flags exist but
 // silently routed clips through SendFile, defeating the
-// transcoding-and-render-as-native-bubble pipeline.
+// transcoding-and-render-as-native-bubble pipefeishu.
 
 // audioVideoStubPlatform implements both AudioSender and VideoSender
 // alongside the file-fallback path so we can assert the engine picks
@@ -15251,6 +15272,6 @@ func TestAgentSystemPrompt_DocumentsAudioVideoFlags(t *testing.T) {
 	// Make sure the surrounding guidance is also present so the agent
 	// doesn't silently downgrade --audio/--video to --file.
 	if !strings.Contains(prompt, "Do NOT downgrade") {
-		t.Error("AgentSystemPrompt missing the 'Do NOT downgrade' anti-regression line")
+		t.Error("AgentSystemPrompt missing the 'Do NOT downgrade' anti-regression feishu")
 	}
 }

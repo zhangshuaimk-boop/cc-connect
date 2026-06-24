@@ -268,7 +268,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	//   • 99% case (no platform formatting, no user append) — reuse the
 	//     shared cc-connect-system.md file written once at startup; no
 	//     per-spawn write, no cleanup needed.
-	//   • 1% edge case (Slack/Weixin/MAX platform formatting or user-set
+	//   • 1% edge case (platform-specific formatting or user-set
 	//     append_system_prompt) — write a per-spawn temp file containing
 	//     the merged content, removed on Close.
 	//
@@ -352,7 +352,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	// Put the child into its own process group so Close() can terminate the
 	// entire descendant tree (claude CLI → MCP server bridges → ...) with a
 	// single signal. Without this, killing only the direct child can leave
-	// MCP grandchildren (e.g. the Telegram bridge bun process) spinning at
+	// MCP grandchildren (e.g. the bridge child process) spinning at
 	// 100% CPU after their parent's stdio pipe closes.
 	prepareCmdForKill(cmd)
 	// Filter out CLAUDECODE env var to prevent "nested session" detection,
@@ -1192,8 +1192,8 @@ func (cs *claudeSession) Close() error {
 	// descendants (e.g. MCP server bridges) a second chance to run cleanup
 	// handlers that respond to signals but not stdin EOF.
 	if err := signalProcessGroup(cs.cmd, syscall.SIGTERM); err != nil {
-			slog.Warn("claudeSession: signal SIGTERM", "error", err)
-		}
+		slog.Warn("claudeSession: signal SIGTERM", "error", err)
+	}
 
 	select {
 	case <-cs.done:
@@ -1205,7 +1205,7 @@ func (cs *claudeSession) Close() error {
 
 	// Phase 3: SIGKILL the whole process group — last resort. Using a
 	// group-wide kill ensures grandchildren (Claude Code's MCP servers
-	// such as the Telegram bridge) are reaped along with the direct child;
+	// child bridge processes) are reaped along with the direct child;
 	// otherwise they can survive as orphans and spin at 100% CPU.
 	cs.cancel()
 	if err := forceKillCmd(cs.cmd); err != nil {

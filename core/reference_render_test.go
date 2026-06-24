@@ -50,7 +50,7 @@ func TestTransformLocalReferences_PreservesWebMarkdownLinks(t *testing.T) {
 		t.Fatalf("TransformLocalReferences() = %q, want web link preserved", got)
 	}
 	if !strings.Contains(got, "app.ts#L42") {
-		t.Fatalf("TransformLocalReferences() = %q, want local hash-line reference rendered", got)
+		t.Fatalf("TransformLocalReferences() = %q, want local hash-feishu reference rendered", got)
 	}
 }
 
