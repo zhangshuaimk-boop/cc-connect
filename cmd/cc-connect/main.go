@@ -246,9 +246,6 @@ func main() {
 		case "feishu":
 			runFeishu(os.Args[2:])
 			return
-		case "weixin":
-			runWeixin(os.Args[2:])
-			return
 		case "doctor":
 			runDoctor(os.Args[2:])
 			return
@@ -1139,25 +1136,6 @@ func main() {
 			})
 			return err
 		})
-		mgmtSrv.SetSetupWeixinSave(func(req core.WeixinSetupSaveRequest) error {
-			_, err := config.EnsureProjectWithWeixinPlatform(config.EnsureProjectWithWeixinOptions{
-				ProjectName: req.ProjectName,
-				WorkDir:     req.WorkDir,
-				AgentType:   req.AgentType,
-			})
-			if err != nil {
-				return fmt.Errorf("ensure project: %w", err)
-			}
-			_, err = config.SaveWeixinPlatformCredentials(config.WeixinCredentialUpdateOptions{
-				ProjectName:       req.ProjectName,
-				Token:             req.Token,
-				BaseURL:           req.BaseURL,
-				AccountID:         req.IlinkBotID,
-				ScannedUserID:     req.IlinkUserID,
-				SetAllowFromEmpty: true,
-			})
-			return err
-		})
 		mgmtSrv.SetAddPlatformToProject(func(projectName, platType string, opts map[string]any, workDir, agentType string) error {
 			if opts == nil {
 				opts = map[string]any{}
@@ -1555,7 +1533,7 @@ func printUsage() {
 
   Bridge your messaging platforms to local AI coding agents.
   Supports: Claude Code, Codex, Cursor, Gemini CLI, Qoder CLI, OpenCode
-  Platforms: Feishu, Telegram, Slack, DingTalk, Discord, LINE, WeChat Work, Weixin, QQ, QQ Bot
+  Platform: Feishu / Lark
 
   GitHub:  https://github.com/chenhg5/cc-connect
   Docs:    https://github.com/chenhg5/cc-connect/blob/main/INSTALL.md
@@ -1609,11 +1587,6 @@ Commands:
     new              Force QR onboarding to create a new bot
     bind             Bind existing app_id/app_secret
 
-  weixin             Setup Weixin personal (ilink) via QR or token
-    setup            QR login, or bind when --token is provided
-    new              Force QR login
-    bind             Bind existing ilink bot token
-
   config             Manage configuration
     example          Print a complete annotated config.toml example
     format           Format the config file (alias: fmt)
@@ -1631,7 +1604,6 @@ Examples:
   cc-connect send -m "hello"          Send a message to the active session
   cc-connect cron list                List all scheduled tasks
   cc-connect feishu setup             Setup Feishu/Lark bot credentials
-  cc-connect weixin setup             Setup Weixin (ilink) with QR or --token
   cc-connect update                   Update to the latest version
   cc-connect config format            Format the config file
   cc-connect config example > c.toml  Save example config to a file
