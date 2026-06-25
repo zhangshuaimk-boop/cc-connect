@@ -65,7 +65,7 @@ endif
 _BUILD_TAGS := $(strip $(_EXCLUDE_TAGS) goolm)
 _TAGS_FLAG  := $(if $(_BUILD_TAGS),-tags '$(_BUILD_TAGS)',)
 
-.PHONY: build run clean test test-fast test-full test-smoke test-e2e test-release test-release-local test-performance pre-test lint release release-all web
+.PHONY: build run clean test test-unit test-contract test-integration test-blackbox test-pyramid-local test-fast test-full test-smoke test-e2e test-release test-release-local test-performance pre-test lint release release-all web
 
 web:
 	@if [ ! -d web/node_modules ]; then cd web && npm install; fi
@@ -87,19 +87,42 @@ clean:
 # ---------------------------------------------------------------------------
 # Testing targets.
 #
-# test-fast:  Unit tests + smoke tests (< 2 min). Runs on every push.
-# test-full:   Full test suite including regression (< 10 min). PR requirement.
-# test-smoke:  Smoke tests only (< 1 min). Quick sanity check.
-# test-e2e:    E2E and regression tests only.
-# test-release: Full + performance benchmarks. Before release.
-# pre-test:    Prerequisites (build + vet) before running tests.
+# test-unit:          Default package tests without opt-in build tags.
+# test-contract:      Deterministic Engine/Platform/Agent contract checks.
+# test-integration:   Mock-platform integration tests; no real Feishu/Lark.
+# test-blackbox:      Real agents + MockPlatform; skips without local creds.
+# test-pyramid-local: Unit + contract + mock integration; no real Feishu/Lark.
+# test-fast:          Unit tests + mock smoke tests (< 2 min).
+# test-full:          Unit + mock smoke + mock regression (< 10 min).
+# test-smoke:         Mock smoke tests only (< 1 min).
+# test-e2e:           Mock E2E/regression tests only.
+# test-release:       Full + performance benchmarks.
+# pre-test:           Prerequisites (build + vet) before running tests.
 # ---------------------------------------------------------------------------
 
 pre-test:
 	go build ./...
 	go vet ./...
 
-# Fast test: unit tests + smoke tests
+# Unit/component tests that run without opt-in build tags.
+test-unit:
+	go test ./config ./core ./platform/feishu ./agent/... ./cmd/cc-connect ./daemon
+
+# Deterministic release-local contracts. No real IM, provider account, or supervisor.
+test-contract: test-release-local
+
+# Mock-platform integration tests. These may skip if local agent config is absent.
+test-integration:
+	go test -tags=integration ./tests/integration/...
+
+# Real agent adapters through a MockPlatform. No real Feishu/Lark event delivery.
+test-blackbox:
+	go test -tags=blackbox ./tests/blackbox/...
+
+# Local pyramid excluding real Feishu/Lark E2E.
+test-pyramid-local: test-unit test-contract test-integration
+
+# Fast test: default tests + mock smoke tests
 test-fast: pre-test
 	go test -parallel=4 -race ./...
 	go test -parallel=4 -tags=smoke ./tests/e2e/...
@@ -110,11 +133,11 @@ test-full: pre-test
 	go test -parallel=4 -tags=smoke ./tests/e2e/...
 	go test -parallel=2 -tags=regression ./tests/e2e/...
 
-# Smoke tests only
+# Mock smoke tests only
 test-smoke: pre-test
 	go test -v -tags=smoke ./tests/e2e/...
 
-# E2E/regression tests only
+# Mock E2E/regression tests only
 test-e2e: pre-test
 	go test -v -tags=regression ./tests/e2e/...
 

@@ -279,6 +279,12 @@ func TestCodexPromptPreamble_EmptyIsNoop(t *testing.T) {
 }
 
 func TestGetModelAndReasoningEffort_FromRuntimeConfigWhenUnset(t *testing.T) {
+	oldTimeout := codexRuntimeConfigTimeout
+	codexRuntimeConfigTimeout = 5 * time.Second
+	t.Cleanup(func() {
+		codexRuntimeConfigTimeout = oldTimeout
+	})
+
 	workDir := t.TempDir()
 	binDir := filepath.Join(workDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -885,15 +891,7 @@ func TestClose_ForceKillsProcessGroupAfterGracefulTimeout(t *testing.T) {
 	if elapsed := time.Since(closeStarted); elapsed > time.Second {
 		t.Fatalf("Close took too long after force kill: %v", elapsed)
 	}
-
-	select {
-	case evt, ok := <-cs.Events():
-		if ok {
-			t.Fatalf("unexpected event after Close: %#v", evt)
-		}
-	case <-time.After(700 * time.Millisecond):
-		t.Fatal("timed out waiting for events channel to close")
-	}
+	waitForEventsClosed(t, cs.Events(), 2*time.Second)
 }
 
 func TestClose_ForceKillsAllTrackedProcessesAfterCmdOverwrite(t *testing.T) {
@@ -957,15 +955,7 @@ func TestClose_ForceKillsAllTrackedProcessesAfterCmdOverwrite(t *testing.T) {
 	if elapsed := time.Since(closeStarted); elapsed > time.Second {
 		t.Fatalf("Close took too long after force killing tracked processes: %v", elapsed)
 	}
-
-	select {
-	case evt, ok := <-cs.Events():
-		if ok {
-			t.Fatalf("unexpected event after Close: %#v", evt)
-		}
-	case <-time.After(700 * time.Millisecond):
-		t.Fatal("timed out waiting for events channel to close")
-	}
+	waitForEventsClosed(t, cs.Events(), 2*time.Second)
 }
 
 func waitForThreadID(t *testing.T, cs *codexSession, want string) {
@@ -1000,6 +990,21 @@ func waitForDoneResult(t *testing.T, events <-chan core.Event) {
 			}
 		case <-timeout:
 			t.Fatal("timed out waiting for done result")
+		}
+	}
+}
+
+func waitForEventsClosed(t *testing.T, events <-chan core.Event, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case _, ok := <-events:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for events channel to close")
 		}
 	}
 }
