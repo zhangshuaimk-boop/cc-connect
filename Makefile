@@ -37,7 +37,7 @@ PLATFORMS := \
 #   make build EXCLUDE=gemini,iflow
 # ---------------------------------------------------------------------------
 
-ALL_AGENTS    := acp antigravity claudecode codex copilot cursor devin gemini iflow kimi opencode pi qoder tmux
+ALL_AGENTS    := acp antigravity claudecode codex copilot cursor devin gemini iflow kimi opencode pi qoder tmux traex
 ALL_PLATFORMS := feishu
 ALL_EXTRAS    := web
 
