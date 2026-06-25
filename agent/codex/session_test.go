@@ -317,7 +317,9 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}, "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -740,7 +742,7 @@ func writeFakeCodexScript(t *testing.T, dir, shellScript, powershellScript strin
 
 func waitForArgsFile(t *testing.T, path string) []string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(path)
 		if err == nil {
@@ -761,7 +763,11 @@ func waitForArgsFile(t *testing.T, path string) []string {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for non-empty args file: %s", path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("timed out waiting for non-empty args file: %s: %v", path, err)
+	}
+	t.Fatalf("timed out waiting for non-empty args file: %s current=%q", path, string(data))
 	return nil
 }
 

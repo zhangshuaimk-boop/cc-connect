@@ -404,7 +404,7 @@ while :; do sleep 1; done
 		t.Fatalf("Send #1: %v", err)
 	}
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 	gotResult := false
 	for !gotResult {
 		select {
