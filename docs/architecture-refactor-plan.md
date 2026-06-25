@@ -158,6 +158,8 @@ Parallelism:
 
 ## Task 4: Scheduler Execution Boundary
 
+Status: completed in `refactor: split scheduler execution helpers`.
+
 Scope:
 
 - Separate cron/timer execution orchestration from interactive user-message handling.
@@ -175,6 +177,13 @@ GOCACHE=/private/tmp/cc-connect-go-cache go test ./core -run 'Test.*Cron|Test.*T
 GOCACHE=/private/tmp/cc-connect-go-cache go test ./core
 CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e
 ```
+
+Completed validation:
+
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./core -run 'Test.*Cron|Test.*Timer|TestCUJ'`
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./core`
+- `CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e`
+- e2e message: `om_x100b6cf9a58bf8a8b21d85d26a7ee01`
 
 Parallelism:
 
