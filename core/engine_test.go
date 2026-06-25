@@ -8828,6 +8828,24 @@ func TestDrainOrphanedQueue_UsesWorkspaceSessionManager(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSessionManagerStaysInMemoryWhenRootStoreIsEmpty(t *testing.T) {
+	agentName := "test-workspace-in-memory-session-store"
+	RegisterAgent(agentName, func(opts map[string]any) (Agent, error) {
+		return &namedTestAgent{name: agentName}, nil
+	})
+	e := NewEngine("test", &namedTestAgent{name: agentName}, nil, "", LangEnglish)
+	agent, sessions, err := e.getOrCreateWorkspaceAgent(t.TempDir())
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspaceAgent returned error: %v", err)
+	}
+	if agent == nil {
+		t.Fatal("expected workspace agent")
+	}
+	if got := sessions.StorePath(); got != "" {
+		t.Fatalf("workspace session store path = %q, want empty", got)
+	}
+}
+
 // ── executeCardAction interactiveKey tests ───────────────────
 
 func TestHandleCardNav_ModelSwitchesAndRefreshesCard(t *testing.T) {

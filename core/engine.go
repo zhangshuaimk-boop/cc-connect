@@ -3774,10 +3774,14 @@ func (e *Engine) getOrCreateWorkspaceAgent(workspace string) (Agent, *SessionMan
 		}
 	}
 
-	// Create per-workspace session manager
+	// Create per-workspace session manager. If the root session manager is
+	// in-memory, workspace sessions must remain in-memory too.
 	h := sha256.Sum256([]byte(workspace))
-	sessionFile := filepath.Join(filepath.Dir(e.sessions.StorePath()),
-		fmt.Sprintf("%s_ws_%s.json", e.name, hex.EncodeToString(h[:4])))
+	sessionFile := ""
+	if storePath := e.sessions.StorePath(); storePath != "" {
+		sessionFile = filepath.Join(filepath.Dir(storePath),
+			fmt.Sprintf("%s_ws_%s.json", e.name, hex.EncodeToString(h[:4])))
+	}
 	sessions := NewSessionManager(sessionFile)
 
 	ws.agent = agent
