@@ -1247,26 +1247,15 @@ func (p *Platform) onMessageRecalled(_ context.Context, event *larkim.P2MessageR
 }
 
 func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
-	msg := event.Event.Message
-	sender := event.Event.Sender
-
-	msgType := ""
-	if msg.MessageType != nil {
-		msgType = *msg.MessageType
-	}
-
-	chatID := ""
-	if msg.ChatId != nil {
-		chatID = *msg.ChatId
-	}
-	userID := userIDFromEvent(sender.SenderId)
+	in := parseFeishuInboundMessage(event)
+	msg := in.message
+	msgType := in.msgType
+	chatID := in.chatID
+	userID := in.userID
 	// userName and chatName are resolved in dispatchMessage to avoid blocking
 	// the SDK dispatcher goroutine with synchronous HTTP calls.
 
-	messageID := ""
-	if msg.MessageId != nil {
-		messageID = *msg.MessageId
-	}
+	messageID := in.messageID
 
 	if p.isMessageRecalled(messageID) {
 		slog.Debug(p.tag()+": recalled message ignored before dispatch", "message_id", messageID)
@@ -1278,30 +1267,26 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		return nil
 	}
 
-	var createTimeMs int64
-	if msg.CreateTime != nil {
-		if ms, err := strconv.ParseInt(*msg.CreateTime, 10, 64); err == nil {
+	if in.createTime != "" {
+		if in.createTimeMs > 0 {
+			ms := in.createTimeMs
 			msgTime := time.Unix(ms/1000, (ms%1000)*int64(time.Millisecond))
 			if core.IsOldMessage(msgTime) {
-				slog.Debug(p.tag()+": ignoring old message after restart", "create_time", *msg.CreateTime)
+				slog.Debug(p.tag()+": ignoring old message after restart", "create_time", in.createTime)
 				return nil
 			}
-			createTimeMs = ms
 		}
 	}
 
-	chatType := ""
-	if msg.ChatType != nil {
-		chatType = *msg.ChatType
-	}
-	mentionCount := len(msg.Mentions)
+	chatType := in.chatType
+	mentionCount := len(in.mentions)
 	slog.Debug(p.tag()+": inbound message",
 		"message_id", messageID,
 		"chat_id", chatID,
 		"chat_type", chatType,
-		"root_id", stringValue(msg.RootId),
-		"thread_id", stringValue(msg.ThreadId),
-		"parent_id", stringValue(msg.ParentId),
+		"root_id", in.rootID,
+		"thread_id", in.threadID,
+		"parent_id", in.parentID,
 		"mentions", mentionCount,
 		"group_reply_all", p.groupReplyAll,
 		"thread_isolation", p.threadIsolation,
@@ -1311,25 +1296,22 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// thread set; sessionKey is also used downstream for dispatch.
 	sessionKey := p.makeSessionKey(msg, chatID, userID)
 
-	if chatType == "group" && !p.groupReplyAll && p.getBotOpenID() != "" {
-		if !isBotMentioned(msg.Mentions, p.getBotOpenID()) {
-			switch {
-			// Feishu @all sends {"text":"@_all"} with 0 mentions.
-			case p.respondToAtEveryoneAndHere && msg.Content != nil && strings.Contains(*msg.Content, "@_all"):
-				slog.Debug(p.tag()+": responding to @all message", "chat_id", chatID)
-			// Once a thread has been engaged via @bot, allow follow-up
-			// attachment-only messages (image/file/audio) in the same thread
-			// through without re-mentioning the bot. Plain text and rich-text
-			// posts still require an explicit @bot to avoid pulling in
-			// unrelated chatter.
-			case p.threadIsolation && isAttachmentMsgType(msgType) && p.isActiveThreadSession(sessionKey):
-				slog.Debug(p.tag()+": passing attachment through active thread without mention",
-					"chat_id", chatID, "session_key", sessionKey, "msg_type", msgType, "message_id", messageID)
-			default:
-				slog.Debug(p.tag()+": ignoring group message without bot mention", "chat_id", chatID)
-				return nil
-			}
-		}
+	mentionDecision := decideFeishuMention(in, p.getBotOpenID(), p.groupReplyAll, p.respondToAtEveryoneAndHere, p.threadIsolation && p.isActiveThreadSession(sessionKey))
+	if !mentionDecision.allow {
+		slog.Debug(p.tag()+": ignoring group message without bot mention", "chat_id", chatID)
+		return nil
+	}
+	if mentionDecision.atEveryone {
+		slog.Debug(p.tag()+": responding to @all message", "chat_id", chatID)
+	}
+	if mentionDecision.activeThreadAttachment {
+		// Once a thread has been engaged via @bot, allow follow-up
+		// attachment-only messages (image/file/audio) in the same thread
+		// through without re-mentioning the bot. Plain text and rich-text
+		// posts still require an explicit @bot to avoid pulling in
+		// unrelated chatter.
+		slog.Debug(p.tag()+": passing attachment through active thread without mention",
+			"chat_id", chatID, "session_key", sessionKey, "msg_type", msgType, "message_id", messageID)
 	}
 
 	if !core.AllowList(p.allowFrom, userID) {
@@ -1347,24 +1329,17 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		return nil
 	}
 
-	if msg.Content == nil && msgType != "merge_forward" {
+	if !in.hasContent && msgType != "merge_forward" {
 		slog.Debug(p.tag()+": message content is nil", "message_id", messageID, "type", msgType)
 		return nil
 	}
 
 	// Capture content before going async — the SDK may reuse the event object.
-	content := ""
-	if msg.Content != nil {
-		content = *msg.Content
-	}
-	mentions := msg.Mentions
-	parentID := stringValue(msg.ParentId)
-
-	rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
+	dispatch := in.dispatchInput(sessionKey)
 	slog.Debug(p.tag()+": routed inbound message",
 		"message_id", messageID,
 		"session_key", sessionKey,
-		"reply_in_thread", p.shouldReplyInThread(rctx),
+		"reply_in_thread", p.shouldReplyInThread(dispatch.rctx),
 	)
 
 	// Mark this thread as bot-engaged so subsequent attachment-only messages
@@ -1375,7 +1350,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
 	// correctness before spawning the goroutine.
-	go p.dispatchMessage(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs)
+	go p.dispatchMessage(ctx, dispatch.msgType, dispatch.content, dispatch.mentions, dispatch.messageID, dispatch.sessionKey, dispatch.userID, dispatch.chatID, dispatch.rctx, dispatch.parentID, dispatch.createTimeMs)
 
 	return nil
 }
@@ -3247,27 +3222,6 @@ func (p *Platform) fetchBotOpenID() (string, error) {
 	return result.Bot.OpenID, nil
 }
 
-func isBotMentioned(mentions []*larkim.MentionEvent, botOpenID string) bool {
-	for _, m := range mentions {
-		if m.Id != nil && m.Id.OpenId != nil && *m.Id.OpenId == botOpenID {
-			return true
-		}
-	}
-	return false
-}
-
-// isAttachmentMsgType reports whether a Feishu message type carries only an
-// attachment payload (no free-form text the user could use to address another
-// human). These are the message types we are willing to admit into an
-// already-engaged thread without an explicit @bot mention.
-func isAttachmentMsgType(msgType string) bool {
-	switch msgType {
-	case "image", "file", "audio", "media":
-		return true
-	}
-	return false
-}
-
 // markThreadSessionActive records that a thread sessionKey has been engaged
 // by an @bot message, enabling attachment-only follow-ups inside the thread.
 // No-op when thread isolation is disabled or sessionKey is not a thread key.
@@ -3286,28 +3240,6 @@ func (p *Platform) isActiveThreadSession(sessionKey string) bool {
 	}
 	_, ok := p.activeThreadSessions.Load(sessionKey)
 	return ok
-}
-
-// stripMentions processes @mention placeholders (e.g. @_user_1) in text.
-// The bot's own mention is removed; other user mentions are replaced with
-// their display name so the agent can see who was referenced.
-func stripMentions(text string, mentions []*larkim.MentionEvent, botOpenID string) string {
-	if len(mentions) == 0 {
-		return text
-	}
-	for _, m := range mentions {
-		if m.Key == nil {
-			continue
-		}
-		if botOpenID != "" && m.Id != nil && m.Id.OpenId != nil && *m.Id.OpenId == botOpenID {
-			text = strings.ReplaceAll(text, *m.Key, "")
-		} else if m.Name != nil && *m.Name != "" {
-			text = strings.ReplaceAll(text, *m.Key, "@"+*m.Name)
-		} else {
-			text = strings.ReplaceAll(text, *m.Key, "")
-		}
-	}
-	return strings.TrimSpace(text)
 }
 
 // TODO: Session-key derivation and reply-thread behavior are split across multiple code paths here.

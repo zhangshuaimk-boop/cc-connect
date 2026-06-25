@@ -192,6 +192,8 @@ Parallelism:
 
 ## Task 5: Feishu Event Parsing Boundary
 
+Status: completed in `refactor: split feishu event parser`.
+
 Scope:
 
 - Extract pure conversion from Feishu SDK event objects to `core.Message` inputs.
@@ -209,6 +211,13 @@ GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu -run 'TestOnM
 GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu
 CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e
 ```
+
+Completed validation:
+
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu -run 'TestOnMessage|Test.*Mention|Test.*Attachment|Test.*Thread'`
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu`
+- `CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e`
+- e2e message: `om_x100b6cfa2443d89cb04dbf649ef0718`
 
 Parallelism:
 
