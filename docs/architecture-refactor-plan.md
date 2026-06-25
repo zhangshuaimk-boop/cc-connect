@@ -265,6 +265,8 @@ Parallelism:
 
 ## Task 7: Feishu Send API Boundary
 
+Status: completed in `refactor: split feishu send api boundary`.
+
 Scope:
 
 - Isolate Feishu create/reply/patch/upload/download API operations behind narrow internal helpers.
@@ -275,6 +277,12 @@ Goal:
 
 - Make retry/token-refresh behavior and reply-vs-create decisions easier to test independently.
 
+Result:
+
+- Added `platform/feishu/send_api.go` for narrow create/reply/patch/upload/download SDK operations.
+- Kept `core.Platform` unchanged and left message formatting plus reply-vs-create decisions at existing call sites.
+- Reused the existing transient retry and tenant-token refresh wrappers inside the send API helper.
+
 Validation:
 
 ```bash
@@ -282,6 +290,13 @@ GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu -run 'Test.*R
 GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu
 CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e
 ```
+
+Completed validation:
+
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu -run 'Test.*Retry|Test.*Reply|Test.*Send|Test.*Upload|Test.*Download'`
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu`
+- `CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e`
+- e2e message: `om_x100b6cfb736840b4b1c197791119c3a`
 
 Parallelism:
 

@@ -1,7 +1,6 @@
 package feishu
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2646,33 +2645,7 @@ func (p *Platform) SendImage(ctx context.Context, rctx any, img core.ImageAttach
 }
 
 func (p *Platform) uploadImageKey(ctx context.Context, data []byte) (string, error) {
-	var uploadResp *larkim.CreateImageResp
-	if err := p.withTransientRetry(ctx, "upload image", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "upload image", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			req := larkim.NewCreateImageReqBuilder().
-				Body(larkim.NewCreateImageReqBodyBuilder().
-					ImageType("message").
-					Image(bytes.NewReader(data)).
-					Build()).
-				Build()
-			var err error
-			uploadResp, err = client.Im.Image.Create(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: upload image: %w", p.tag(), err)
-			}
-			if !uploadResp.Success() {
-				return fmt.Errorf("%s: upload image code=%d msg=%s", p.tag(), uploadResp.Code, uploadResp.Msg)
-			}
-			return nil
-		})
-	}); err != nil {
-		return "", err
-	}
-	if uploadResp.Data == nil || uploadResp.Data.ImageKey == nil {
-		return "", fmt.Errorf("%s: upload image: no image_key returned", p.tag())
-	}
-
-	return *uploadResp.Data.ImageKey, nil
+	return p.sendAPI().uploadImageKey(ctx, data)
 }
 
 func (p *Platform) SendFile(ctx context.Context, rctx any, file core.FileAttachment) error {
@@ -2686,35 +2659,13 @@ func (p *Platform) SendFile(ctx context.Context, rctx any, file core.FileAttachm
 		fileName = "attachment"
 	}
 	fileType := detectFeishuFileType(file.MimeType, fileName)
-	var uploadResp *larkim.CreateFileResp
-	if err := p.withTransientRetry(ctx, "upload file", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "upload file", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			req := larkim.NewCreateFileReqBuilder().
-				Body(larkim.NewCreateFileReqBodyBuilder().
-					FileType(fileType).
-					FileName(fileName).
-					File(bytes.NewReader(file.Data)).
-					Build()).
-				Build()
-			var err error
-			uploadResp, err = client.Im.File.Create(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: upload file: %w", p.tag(), err)
-			}
-			if !uploadResp.Success() {
-				return fmt.Errorf("%s: upload file code=%d msg=%s", p.tag(), uploadResp.Code, uploadResp.Msg)
-			}
-			return nil
-		})
-	}); err != nil {
+	fileKey, err := p.sendAPI().uploadFileKey(ctx, "upload file", fileType, fileName, file.Data)
+	if err != nil {
 		return err
-	}
-	if uploadResp.Data == nil || uploadResp.Data.FileKey == nil {
-		return fmt.Errorf("%s: upload file: no file_key returned", p.tag())
 	}
 
 	msgType := detectFeishuFileMessageType(fileType)
-	fileContent, err := buildFeishuFileMessageContent(msgType, *uploadResp.Data.FileKey)
+	fileContent, err := buildFeishuFileMessageContent(msgType, fileKey)
 	if err != nil {
 		return fmt.Errorf("%s: build file message: %w", p.tag(), err)
 	}
@@ -2780,24 +2731,9 @@ func buildFeishuFileMessageContent(msgType, fileKey string) (string, error) {
 }
 
 func (p *Platform) downloadImage(messageID, imageKey string) ([]byte, string, error) {
-	resp, err := p.client.Im.MessageResource.Get(context.Background(),
-		larkim.NewGetMessageResourceReqBuilder().
-			MessageId(messageID).
-			FileKey(imageKey).
-			Type("image").
-			Build())
+	data, err := p.sendAPI().downloadMessageResource(context.Background(), messageID, imageKey, "image", "image API")
 	if err != nil {
-		return nil, "", fmt.Errorf("%s: image API: %w", p.tag(), err)
-	}
-	if !resp.Success() {
-		return nil, "", fmt.Errorf("%s: image API code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-	}
-	if resp.File == nil {
-		return nil, "", fmt.Errorf("%s: image API returned nil file body", p.tag())
-	}
-	data, err := io.ReadAll(resp.File)
-	if err != nil {
-		return nil, "", fmt.Errorf("%s: read image: %w", p.tag(), err)
+		return nil, "", err
 	}
 
 	mimeType := detectMimeType(data)
@@ -2806,24 +2742,9 @@ func (p *Platform) downloadImage(messageID, imageKey string) ([]byte, string, er
 }
 
 func (p *Platform) downloadResource(messageID, fileKey, resType string) ([]byte, error) {
-	resp, err := p.client.Im.MessageResource.Get(context.Background(),
-		larkim.NewGetMessageResourceReqBuilder().
-			MessageId(messageID).
-			FileKey(fileKey).
-			Type(resType).
-			Build())
+	data, err := p.sendAPI().downloadMessageResource(context.Background(), messageID, fileKey, resType, "resource API")
 	if err != nil {
-		return nil, fmt.Errorf("%s: resource API: %w", p.tag(), err)
-	}
-	if !resp.Success() {
-		return nil, fmt.Errorf("%s: resource API code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-	}
-	if resp.File == nil {
-		return nil, fmt.Errorf("%s: resource API returned nil file body", p.tag())
-	}
-	data, err := io.ReadAll(resp.File)
-	if err != nil {
-		return nil, fmt.Errorf("%s: read resource: %w", p.tag(), err)
+		return nil, err
 	}
 	slog.Debug(p.tag()+": downloaded resource", "key", fileKey, "type", resType, "size", len(data))
 	return data, nil
@@ -3260,45 +3181,21 @@ func (p *Platform) buildReplyMessageReqBody(rc replyContext, msgType, content st
 }
 
 func (p *Platform) replyMessage(ctx context.Context, rc replyContext, msgType, content string) error {
-	req := larkim.NewReplyMessageReqBuilder().
-		MessageId(rc.messageID).
-		Body(p.buildReplyMessageReqBody(rc, msgType, content)).
-		Build()
-	return p.withTransientRetry(ctx, "reply", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "reply", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			resp, err := client.Im.Message.Reply(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: reply api call: %w", p.tag(), err)
-			}
-			if !resp.Success() {
-				return fmt.Errorf("%s: reply failed code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-			}
-			return nil
-		})
+	_, err := p.sendAPI().replyMessage(ctx, rc, msgType, content, feishuMessageAPILabels{
+		retry:   "reply",
+		network: "reply api call",
+		failed:  "reply failed",
 	})
+	return err
 }
 
 func (p *Platform) createMessage(ctx context.Context, chatID, msgType, content, op string) error {
-	req := larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(larkim.ReceiveIdTypeChatId).
-		Body(larkim.NewCreateMessageReqBodyBuilder().
-			ReceiveId(chatID).
-			MsgType(msgType).
-			Content(content).
-			Build()).
-		Build()
-	return p.withTransientRetry(ctx, op, func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, op, func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			resp, err := client.Im.Message.Create(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: %s api call: %w", p.tag(), op, err)
-			}
-			if !resp.Success() {
-				return fmt.Errorf("%s: %s failed code=%d msg=%s", p.tag(), op, resp.Code, resp.Msg)
-			}
-			return nil
-		})
+	_, err := p.sendAPI().createMessage(ctx, chatID, msgType, content, feishuMessageAPILabels{
+		retry:   op,
+		network: op + " api call",
+		failed:  op + " failed",
 	})
+	return err
 }
 
 func (p *Platform) withFreshTenantAccessTokenRetry(ctx context.Context, operation string, fn feishuRequestFunc) error {
@@ -4054,56 +3951,24 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 
 	var msgID string
 	if p.shouldUseThreadOrReplyAPI(rc) {
-		req := larkim.NewReplyMessageReqBuilder().
-			MessageId(rc.messageID).
-			Body(p.buildReplyMessageReqBody(rc, larkim.MsgTypeInteractive, sendContent)).
-			Build()
-		var resp *larkim.ReplyMessageResp
-		if err := p.withTransientRetry(ctx, "send preview", func() error {
-			return p.withFreshTenantAccessTokenRetry(ctx, "send preview", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-				var err error
-				resp, err = client.Im.Message.Reply(ctx, req, options...)
-				if err != nil {
-					return fmt.Errorf("%s: send preview (reply): %w", p.tag(), err)
-				}
-				if !resp.Success() {
-					return fmt.Errorf("%s: send preview (reply) code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-				}
-				return nil
-			})
-		}); err != nil {
+		var err error
+		msgID, err = p.sendAPI().replyMessage(ctx, rc, larkim.MsgTypeInteractive, sendContent, feishuMessageAPILabels{
+			retry:   "send preview",
+			network: "send preview (reply)",
+			failed:  "send preview (reply)",
+		})
+		if err != nil {
 			return nil, err
-		}
-		if resp.Data != nil && resp.Data.MessageId != nil {
-			msgID = *resp.Data.MessageId
 		}
 	} else {
-		req := larkim.NewCreateMessageReqBuilder().
-			ReceiveIdType(larkim.ReceiveIdTypeChatId).
-			Body(larkim.NewCreateMessageReqBodyBuilder().
-				ReceiveId(chatID).
-				MsgType(larkim.MsgTypeInteractive).
-				Content(sendContent).
-				Build()).
-			Build()
-		var resp *larkim.CreateMessageResp
-		if err := p.withTransientRetry(ctx, "send preview", func() error {
-			return p.withFreshTenantAccessTokenRetry(ctx, "send preview", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-				var err error
-				resp, err = client.Im.Message.Create(ctx, req, options...)
-				if err != nil {
-					return fmt.Errorf("%s: send preview: %w", p.tag(), err)
-				}
-				if !resp.Success() {
-					return fmt.Errorf("%s: send preview code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-				}
-				return nil
-			})
-		}); err != nil {
+		var err error
+		msgID, err = p.sendAPI().createMessage(ctx, chatID, larkim.MsgTypeInteractive, sendContent, feishuMessageAPILabels{
+			retry:   "send preview",
+			network: "send preview",
+			failed:  "send preview",
+		})
+		if err != nil {
 			return nil, err
-		}
-		if resp.Data != nil && resp.Data.MessageId != nil {
-			msgID = *resp.Data.MessageId
 		}
 	}
 
@@ -4290,23 +4155,10 @@ func (p *Platform) UpdateMessageWithStatusFooter(ctx context.Context, previewHan
 }
 
 func (p *Platform) patchCardMessage(ctx context.Context, messageID, cardJSON string) error {
-	req := larkim.NewPatchMessageReqBuilder().
-		MessageId(messageID).
-		Body(larkim.NewPatchMessageReqBodyBuilder().
-			Content(cardJSON).
-			Build()).
-		Build()
-	return p.withTransientRetry(ctx, "patch message", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "patch message", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			resp, err := client.Im.Message.Patch(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: patch message: %w", p.tag(), err)
-			}
-			if !resp.Success() {
-				return fmt.Errorf("%s: patch message code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-			}
-			return nil
-		})
+	return p.sendAPI().patchMessage(ctx, messageID, cardJSON, feishuMessageAPILabels{
+		retry:   "patch message",
+		network: "patch message",
+		failed:  "patch message",
 	})
 }
 
@@ -4433,33 +4285,10 @@ func (p *Platform) SendAudio(ctx context.Context, rctx any, audio []byte, format
 		format = "opus"
 	}
 
-	var uploadResp *larkim.CreateFileResp
-	if err := p.withTransientRetry(ctx, "upload audio", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "upload audio", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			req := larkim.NewCreateFileReqBuilder().
-				Body(larkim.NewCreateFileReqBodyBuilder().
-					FileType(larkim.FileTypeOpus).
-					FileName("tts_audio.opus").
-					File(bytes.NewReader(audio)).
-					Build()).
-				Build()
-			var err error
-			uploadResp, err = client.Im.File.Create(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: upload audio: %w", p.tag(), err)
-			}
-			if !uploadResp.Success() {
-				return fmt.Errorf("%s: upload audio code=%d msg=%s", p.tag(), uploadResp.Code, uploadResp.Msg)
-			}
-			return nil
-		})
-	}); err != nil {
+	fileKey, err := p.sendAPI().uploadFileKey(ctx, "upload audio", larkim.FileTypeOpus, "tts_audio.opus", audio)
+	if err != nil {
 		return err
 	}
-	if uploadResp.Data == nil || uploadResp.Data.FileKey == nil {
-		return fmt.Errorf("%s: upload audio: no file_key returned", p.tag())
-	}
-	fileKey := *uploadResp.Data.FileKey
 
 	slog.Debug(p.tag()+": audio uploaded", "file_key", fileKey, "format", format, "size", len(audio))
 
@@ -4508,33 +4337,10 @@ func (p *Platform) SendVideo(ctx context.Context, rctx any, video []byte, format
 		}
 	}
 
-	var uploadResp *larkim.CreateFileResp
-	if err := p.withTransientRetry(ctx, "upload video", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "upload video", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			req := larkim.NewCreateFileReqBuilder().
-				Body(larkim.NewCreateFileReqBodyBuilder().
-					FileType(larkim.FileTypeMp4).
-					FileName(fileName).
-					File(bytes.NewReader(video)).
-					Build()).
-				Build()
-			var err error
-			uploadResp, err = client.Im.File.Create(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: upload video: %w", p.tag(), err)
-			}
-			if !uploadResp.Success() {
-				return fmt.Errorf("%s: upload video code=%d msg=%s", p.tag(), uploadResp.Code, uploadResp.Msg)
-			}
-			return nil
-		})
-	}); err != nil {
+	fileKey, err := p.sendAPI().uploadFileKey(ctx, "upload video", larkim.FileTypeMp4, fileName, video)
+	if err != nil {
 		return err
 	}
-	if uploadResp.Data == nil || uploadResp.Data.FileKey == nil {
-		return fmt.Errorf("%s: upload video: no file_key returned", p.tag())
-	}
-	fileKey := *uploadResp.Data.FileKey
 
 	slog.Debug(p.tag()+": video uploaded", "file_key", fileKey, "format", format, "size", len(video))
 
@@ -6276,17 +6082,10 @@ func (p *Platform) SetPreviewStatus(previewHandle any, status core.CardStatus) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := p.client.Im.Message.Patch(ctx, larkim.NewPatchMessageReqBuilder().
-		MessageId(h.messageID).
-		Body(larkim.NewPatchMessageReqBodyBuilder().
-			Content(cardJSON).
-			Build()).
-		Build())
-	if err != nil {
+	if err := p.sendAPI().patchMessageOnce(ctx, h.messageID, cardJSON, feishuMessageAPILabels{
+		network: "set preview status patch",
+		failed:  "set preview status patch",
+	}); err != nil {
 		slog.Debug("feishu: set preview status patch failed", "error", err)
-		return
-	}
-	if !resp.Success() {
-		slog.Debug("feishu: set preview status patch failed", "code", resp.Code, "msg", resp.Msg)
 	}
 }
