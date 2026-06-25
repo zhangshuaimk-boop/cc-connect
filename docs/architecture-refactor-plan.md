@@ -226,6 +226,8 @@ Parallelism:
 
 ## Task 6: Feishu Session-Key Policy Boundary
 
+Status: completed in `refactor: split feishu session policy`.
+
 Scope:
 
 - Extract session-key construction and reply-target decisions from `platform/feishu/feishu.go`.
@@ -236,6 +238,12 @@ Goal:
 
 - Make channel/thread behavior testable as policy logic instead of event/API side effects.
 
+Result:
+
+- Added `platform/feishu/session_policy.go` for session-key construction, reply-target decisions, reply-context reconstruction, and relay visibility policy.
+- Kept Feishu send API calls and message formatting unchanged.
+- Added focused policy tests for group/topic/P2P/card-action/reply-target/relay cases.
+
 Validation:
 
 ```bash
@@ -243,6 +251,13 @@ GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu -run 'Test.*S
 GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu
 CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e
 ```
+
+Completed validation:
+
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu -run 'Test.*SessionKey|Test.*Thread|TestRelayGroupVisibility'`
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu`
+- `CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e`
+- e2e message: `om_x100b6cfaa87ee8b0b1fb2432acc4e45`
 
 Parallelism:
 

@@ -3242,51 +3242,6 @@ func (p *Platform) isActiveThreadSession(sessionKey string) bool {
 	return ok
 }
 
-// TODO: Session-key derivation and reply-thread behavior are split across multiple code paths here.
-// Should revisit thread/root handling without changing thread_isolation=false behavior.
-func (p *Platform) makeSessionKey(msg *larkim.EventMessage, chatID, userID string) string {
-	if p.threadIsolation && msg != nil && stringValue(msg.ChatType) == "group" {
-		rootID := stringValue(msg.RootId)
-		if rootID == "" {
-			rootID = stringValue(msg.MessageId)
-		}
-		if rootID != "" {
-			return fmt.Sprintf("%s:%s:root:%s", p.tag(), chatID, rootID)
-		}
-	}
-	if p.shareSessionInChannel {
-		return fmt.Sprintf("%s:%s", p.tag(), chatID)
-	}
-	return fmt.Sprintf("%s:%s:%s", p.tag(), chatID, userID)
-}
-
-func (p *Platform) sessionKeyFromCardAction(chatID, userID string, value map[string]any) string {
-	if value != nil {
-		if sessionKey, _ := value["session_key"].(string); sessionKey != "" {
-			return sessionKey
-		}
-	}
-	if p.shareSessionInChannel {
-		return fmt.Sprintf("%s:%s", p.tag(), chatID)
-	}
-	return fmt.Sprintf("%s:%s:%s", p.tag(), chatID, userID)
-}
-
-func (p *Platform) shouldReplyInThread(rc replyContext) bool {
-	if rc.messageID == "" {
-		return false
-	}
-	return p.threadIsolation && isThreadSessionKey(rc.sessionKey)
-}
-
-// shouldUseThreadOrReplyAPI is true when we should call Im.Message.Reply (optionally with ReplyInThread).
-func (p *Platform) shouldUseThreadOrReplyAPI(rc replyContext) bool {
-	if rc.messageID == "" {
-		return false
-	}
-	return !p.noReplyToTrigger
-}
-
 func (p *Platform) sendNewMessageToChat(ctx context.Context, rc replyContext, msgType, content string) error {
 	if rc.chatID == "" {
 		return fmt.Errorf("%s: chatID is empty, cannot send new message", p.tag())
@@ -3496,64 +3451,6 @@ func stringValue(v *string) string {
 		return ""
 	}
 	return *v
-}
-
-func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
-	// {platformName}:{chatID}:{userID}
-	parts := strings.SplitN(sessionKey, ":", 3)
-	if len(parts) < 2 || parts[0] != p.platformName {
-		return nil, fmt.Errorf("%s: invalid session key %q", p.tag(), sessionKey)
-	}
-	rc := replyContext{chatID: parts[1], sessionKey: sessionKey}
-	if len(parts) == 3 {
-		if rootID, ok := parseThreadRootID(parts[2]); ok {
-			rc.messageID = rootID
-		}
-	}
-	return rc, nil
-}
-
-// RelayGroupVisibilityKey implements core.RelayGroupVisibilityTarget for
-// feishu.  When the caller session key targets a feishu thread (its
-// third colon-separated segment carries a non-empty "root:" or
-// "thread:" prefix produced by makeSessionKey), the visibility echo
-// gets routed back into that thread; otherwise the platform returns
-// ("", false) so core falls back to the channel-level ":relay" default.
-func (p *Platform) RelayGroupVisibilityKey(callerSessionKey string) (string, bool) {
-	parts := strings.SplitN(callerSessionKey, ":", 3)
-	if len(parts) < 3 || parts[0] != "feishu" {
-		return "", false
-	}
-	chatID := parts[1]
-	third := parts[2]
-	for _, pfx := range []string{"root:", "thread:"} {
-		if after, ok := strings.CutPrefix(third, pfx); ok && after != "" {
-			return "feishu:" + chatID + ":" + third, true
-		}
-	}
-	return "", false
-}
-
-func parseThreadRootID(sessionTail string) (string, bool) {
-	for _, prefix := range []string{"root:", "thread:"} {
-		if strings.HasPrefix(sessionTail, prefix) {
-			rootID := strings.TrimPrefix(sessionTail, prefix)
-			if rootID != "" {
-				return rootID, true
-			}
-			return "", false
-		}
-	}
-	return "", false
-}
-
-func isThreadSessionKey(sessionKey string) bool {
-	parts := strings.SplitN(sessionKey, ":", 3)
-	if len(parts) != 3 {
-		return false
-	}
-	_, ok := parseThreadRootID(parts[2])
-	return ok
 }
 
 // feishuPreviewHandle stores the message ID for an editable preview message.
