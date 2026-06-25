@@ -304,6 +304,8 @@ Parallelism:
 
 ## Task 8: Feishu Rich Card Rendering Boundary
 
+Status: completed in `refactor: split feishu rich card rendering`.
+
 Scope:
 
 - Move pure rich-card rendering helpers out of `platform/feishu/feishu.go` into focused files.
@@ -314,6 +316,12 @@ Goal:
 
 - Reduce `feishu.go` size and make card snapshots easier to update.
 
+Result:
+
+- Added focused `platform/feishu/rich_card_render.go` for rich-card rendering helpers.
+- Kept v1 `platform/feishu/card.go` card behavior and send/update API paths unchanged.
+- Left stateful Feishu platform APIs on `Platform` while moving pure card JSON, progress-card, rich-card layout, and markdown sanitizing helpers out of `feishu.go`.
+
 Validation:
 
 ```bash
@@ -321,6 +329,13 @@ GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu -run 'Test.*C
 GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu
 CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e
 ```
+
+Completed validation:
+
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu -run 'Test.*Card|Test.*Markdown|Test.*Rich'`
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./platform/feishu`
+- `CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e`
+- e2e message: `om_x100b6ce47da4c8b4b1d57c8e85ceaa6`
 
 Parallelism:
 
