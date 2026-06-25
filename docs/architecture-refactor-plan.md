@@ -89,6 +89,8 @@ Parallelism:
 
 ## Task 2: Engine Outbound Delivery Boundary
 
+Status: completed in `1a1d1b1 refactor: split engine outbound delivery`.
+
 Scope:
 
 - Isolate send/reply/rate-limit/card-output helpers from `core/engine.go`.
@@ -107,6 +109,13 @@ GOCACHE=/private/tmp/cc-connect-go-cache go test ./core -run 'Test.*Send|Test.*R
 GOCACHE=/private/tmp/cc-connect-go-cache go test ./core
 CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e
 ```
+
+Completed validation:
+
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./core -run 'Test.*Send|Test.*Reply|Test.*Card|TestOutgoing|TestCUJ'`
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./core`
+- `CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e`
+- e2e message: `om_x100b6cf95cab7098b163ba7e798b8a6`
 
 Parallelism:
 
