@@ -20,14 +20,14 @@ require_cmd lark-cli
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 binary="${CC_E2E_BINARY:-$repo_root/.tmp/cc-connect}"
 config_path="${CC_E2E_CONFIG:-$HOME/.cc-connect-test/config.toml}"
-chat_id="${CC_E2E_CHAT_ID:-}"
+default_chat_id="oc_5f719ed782195ecbc449d4c095eea075" # 智能体测试开发群
+chat_id="${CC_E2E_CHAT_ID:-$default_chat_id}"
 run_root="${CC_E2E_RUN_ROOT:-$repo_root/.tmp/real-feishu-e2e}"
 timeout_secs="${CC_E2E_TIMEOUT_SECS:-180}"
 settle_secs="${CC_E2E_SETTLE_SECS:-5}"
 
 [ -x "$binary" ] || die "test binary is not executable: $binary"
 [ -f "$config_path" ] || die "test config not found: $config_path"
-[ -n "$chat_id" ] || die "CC_E2E_CHAT_ID is required"
 
 config_real="$(python3 - "$config_path" <<'PY'
 import os, sys
@@ -98,17 +98,17 @@ wait_log() {
       return 0
     fi
     if ! kill -0 "$pid" >/dev/null 2>&1; then
-      printf '--- stdout ---\n' >&2
+      printf '%s\n' '--- stdout ---' >&2
       tail -80 "$stdout_log" >&2 || true
-      printf '--- app log ---\n' >&2
+      printf '%s\n' '--- app log ---' >&2
       tail -120 "$app_log" >&2 || true
       die "cc-connect test process exited before $label"
     fi
     sleep 1
   done
-  printf '--- stdout ---\n' >&2
+  printf '%s\n' '--- stdout ---' >&2
   tail -80 "$stdout_log" >&2 || true
-  printf '--- app log ---\n' >&2
+  printf '%s\n' '--- app log ---' >&2
   tail -120 "$app_log" >&2 || true
   die "timeout waiting for $label"
 }
