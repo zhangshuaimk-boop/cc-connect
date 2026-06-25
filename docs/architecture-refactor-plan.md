@@ -51,6 +51,8 @@ Task format:
 
 ## Task 1: Engine Lifecycle Split
 
+Status: completed in `61f4a52 refactor: split restart notification flow`.
+
 Scope:
 
 - Move restart notification and other lifecycle-only helpers out of `core/engine.go`.
@@ -69,6 +71,12 @@ GOCACHE=/private/tmp/cc-connect-go-cache go test ./core -run 'TestRestartNotify|
 GOCACHE=/private/tmp/cc-connect-go-cache go test ./core
 CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e
 ```
+
+Completed validation:
+
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./core`
+- `CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e`
+- e2e message: `om_x100b6cf87c842088b48c1d3b2973b66`
 
 Parallelism:
 
