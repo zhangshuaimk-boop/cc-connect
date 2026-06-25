@@ -2803,6 +2803,39 @@ func TestEngine_SkillCommand_DisabledByProjectLevel(t *testing.T) {
 	}
 }
 
+func TestEngine_CommandDispatchParsesQuotedArgs(t *testing.T) {
+	parsed := parseEngineCommand(`/workspace bind "/tmp/my workspace"`)
+
+	if parsed.id != "workspace" {
+		t.Fatalf("id = %q, want workspace", parsed.id)
+	}
+	if parsed.name != "workspace" {
+		t.Fatalf("name = %q, want workspace", parsed.name)
+	}
+	if len(parsed.args) != 2 || parsed.args[0] != "bind" || parsed.args[1] != "/tmp/my workspace" {
+		t.Fatalf("args = %#v, want quoted path preserved as one arg", parsed.args)
+	}
+}
+
+func TestEngine_CommandDispatchRoleDisabledOverridesProjectLevel(t *testing.T) {
+	e := newTestEngine()
+	e.SetDisabledCommands([]string{"help"})
+
+	urm := NewUserRoleManager()
+	urm.Configure("member", []RoleInput{
+		{Name: "admin", UserIDs: []string{"admin1"}, DisabledCommands: []string{}},
+		{Name: "member", UserIDs: []string{"*"}, DisabledCommands: []string{"status"}},
+	})
+	e.SetUserRoles(urm)
+
+	if disabled := e.effectiveDisabledCommands("admin1"); commandDisabled(disabled, "help") {
+		t.Fatal("admin role should override project-level disabled_commands")
+	}
+	if disabled := e.effectiveDisabledCommands("user1"); !commandDisabled(disabled, "status") {
+		t.Fatal("member role should use role-level disabled_commands")
+	}
+}
+
 // --- role-based rate limit tests ---
 
 func TestEngine_RateLimit_RoleSpecific(t *testing.T) {

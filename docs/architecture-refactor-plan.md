@@ -124,6 +124,8 @@ Parallelism:
 
 ## Task 3: Command Dispatch Boundary
 
+Status: completed in `refactor: split command dispatch boundary`.
+
 Scope:
 
 - Split command parsing and dispatch table logic from command implementations where possible.
@@ -142,6 +144,13 @@ GOCACHE=/private/tmp/cc-connect-go-cache go test ./core -run 'Test.*Command|Test
 GOCACHE=/private/tmp/cc-connect-go-cache go test ./core
 CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e
 ```
+
+Completed validation:
+
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./core -run 'Test.*Command|Test.*Alias|TestCUJ'`
+- `GOCACHE=/private/tmp/cc-connect-go-cache go test ./core`
+- `CC_REAL_FEISHU_E2E=1 make test-real-feishu-e2e`
+- e2e message: `om_x100b6cf98b57dcacb13f452ec123336`
 
 Parallelism:
 
