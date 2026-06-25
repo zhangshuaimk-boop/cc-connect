@@ -48,6 +48,10 @@ Task format:
 4. Run local tests.
 5. Run real Feishu e2e.
 6. Commit that task.
+7. Update this plan with task status, commit id, and validation evidence.
+8. Send a new root message in the current group, not a reply in the current topic, and @ the cc-connect development bot to start the next task.
+
+The handoff message must include the next task title, the target files, and the required test gate. Do not use a topic reply for this handoff; it must create a separate discussion thread for the next task.
 
 ## Task 1: Engine Lifecycle Split
 
