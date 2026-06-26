@@ -1,6 +1,7 @@
 package feishu
 
 import (
+	"strings"
 	"testing"
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -103,6 +104,60 @@ func TestFeishuSessionPolicySessionKeyForMessage(t *testing.T) {
 	}
 }
 
+func TestFeishuSessionPolicyNewAndReusedThreadSessions(t *testing.T) {
+	policy := feishuSessionPolicy{platformName: "feishu", threadIsolation: true}
+	chatID := "oc_chat"
+	userID := "ou_user"
+
+	first := policy.sessionKeyForMessage(&larkim.EventMessage{
+		ChatType:  stringPtr("group"),
+		MessageId: stringPtr("om_root"),
+	}, chatID, userID)
+	if first != "feishu:oc_chat:root:om_root" {
+		t.Fatalf("new group thread session = %q", first)
+	}
+
+	reused := policy.sessionKeyForMessage(&larkim.EventMessage{
+		ChatType:  stringPtr("group"),
+		MessageId: stringPtr("om_child"),
+		RootId:    stringPtr("om_root"),
+	}, chatID, userID)
+	if reused != first {
+		t.Fatalf("reply session = %q, want reused root session %q", reused, first)
+	}
+
+	next := policy.sessionKeyForMessage(&larkim.EventMessage{
+		ChatType:  stringPtr("group"),
+		MessageId: stringPtr("om_other_root"),
+	}, chatID, userID)
+	if next == first {
+		t.Fatalf("different root reused prior session %q", next)
+	}
+}
+
+func TestFeishuSessionPolicyChannelSessionsReuseWhenShared(t *testing.T) {
+	msg := &larkim.EventMessage{
+		ChatType:  stringPtr("group"),
+		MessageId: stringPtr("om_msg"),
+	}
+
+	perUser := feishuSessionPolicy{platformName: "feishu"}
+	if got := perUser.sessionKeyForMessage(msg, "oc_chat", "ou_alice"); got != "feishu:oc_chat:ou_alice" {
+		t.Fatalf("per-user session = %q", got)
+	}
+	if got := perUser.sessionKeyForMessage(msg, "oc_chat", "ou_bob"); got != "feishu:oc_chat:ou_bob" {
+		t.Fatalf("second per-user session = %q", got)
+	}
+
+	shared := feishuSessionPolicy{platformName: "feishu", shareSessionInChannel: true}
+	if got := shared.sessionKeyForMessage(msg, "oc_chat", "ou_alice"); got != "feishu:oc_chat" {
+		t.Fatalf("shared session = %q", got)
+	}
+	if got := shared.sessionKeyForMessage(msg, "oc_chat", "ou_bob"); got != "feishu:oc_chat" {
+		t.Fatalf("second shared session = %q", got)
+	}
+}
+
 func TestFeishuSessionPolicySessionKeyFromCardAction(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -142,6 +197,34 @@ func TestFeishuSessionPolicySessionKeyFromCardAction(t *testing.T) {
 				t.Fatalf("sessionKeyFromCardAction() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFeishuSessionPolicyWorkspaceAndSessionBindingFromCardAction(t *testing.T) {
+	policy := feishuSessionPolicy{platformName: "feishu", threadIsolation: true}
+
+	for _, embedded := range []string{
+		"feishu:oc_chat:root:om_root",
+		"feishu:oc_workspace:root:om_workspace",
+		"custom-workspace-bound-session",
+	} {
+		t.Run(embedded, func(t *testing.T) {
+			got := policy.sessionKeyFromCardAction("oc_fallback", "ou_fallback", map[string]any{
+				"session_key": embedded,
+				"workspace":   "/tmp/workspace",
+			})
+			if got != embedded {
+				t.Fatalf("card action binding = %q, want embedded session %q", got, embedded)
+			}
+		})
+	}
+
+	got := policy.sessionKeyFromCardAction("oc_fallback", "ou_fallback", map[string]any{
+		"session_key": 123,
+		"workspace":   "/tmp/workspace",
+	})
+	if got != "feishu:oc_fallback:ou_fallback" {
+		t.Fatalf("non-string card session fallback = %q", got)
 	}
 }
 
@@ -286,6 +369,36 @@ func TestFeishuSessionPolicyRelayGroupVisibilityKey(t *testing.T) {
 			gotKey, gotOK := relayGroupVisibilityKey(tt.sessionKey)
 			if gotKey != tt.wantKey || gotOK != tt.wantOK {
 				t.Fatalf("relayGroupVisibilityKey() = (%q, %v), want (%q, %v)", gotKey, gotOK, tt.wantKey, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestFeishuSessionPolicyGroupVisibilityWrapperAndInvalidThreadKeys(t *testing.T) {
+	p := &Platform{platformName: "feishu"}
+
+	key, ok := p.RelayGroupVisibilityKey("feishu:oc_chat:root:om_root")
+	if !ok || key != "feishu:oc_chat:root:om_root" {
+		t.Fatalf("Platform.RelayGroupVisibilityKey() = (%q, %v)", key, ok)
+	}
+
+	for _, sessionKey := range []string{
+		"feishu:oc_chat:root:",
+		"feishu:oc_chat:thread:",
+		"feishu:oc_chat:ou_user",
+		"feishu:oc_chat",
+		"slack:oc_chat:root:om_root",
+		"",
+	} {
+		t.Run(sessionKey, func(t *testing.T) {
+			if gotKey, gotOK := p.RelayGroupVisibilityKey(sessionKey); gotOK || gotKey != "" {
+				t.Fatalf("RelayGroupVisibilityKey(%q) = (%q, %v), want empty false", sessionKey, gotKey, gotOK)
+			}
+			if rootID, ok := parseThreadRootID(strings.TrimPrefix(sessionKey, "feishu:oc_chat:")); ok && rootID == "" {
+				t.Fatalf("parseThreadRootID(%q) reported ok with empty root", sessionKey)
+			}
+			if isThreadSessionKey(sessionKey) && (strings.HasSuffix(sessionKey, "root:") || strings.HasSuffix(sessionKey, "thread:")) {
+				t.Fatalf("isThreadSessionKey(%q) = true for empty thread id", sessionKey)
 			}
 		})
 	}

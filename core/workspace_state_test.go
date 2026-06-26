@@ -76,6 +76,19 @@ func TestWorkspacePool_ReapIdle(t *testing.T) {
 	}
 }
 
+func TestWorkspacePool_ReapIdleDisabled(t *testing.T) {
+	pool := newWorkspacePool(0)
+	state := pool.GetOrCreate("/workspace/a")
+
+	time.Sleep(10 * time.Millisecond)
+	if reaped := pool.ReapIdle(); reaped != nil {
+		t.Fatalf("ReapIdle() with zero timeout = %v, want nil", reaped)
+	}
+	if got := pool.Get("/workspace/a"); got != state {
+		t.Fatal("expected workspace to remain when idle reaping is disabled")
+	}
+}
+
 func TestNormalizeWorkspacePath(t *testing.T) {
 	tmp := t.TempDir()
 	realDir := filepath.Join(tmp, "real-project")
@@ -131,6 +144,62 @@ func TestNormalizeBeforePoolProducesSameKey(t *testing.T) {
 
 	if ws1 != ws2 {
 		t.Error("normalized trailing slash produced a different workspace state")
+	}
+}
+
+func TestWorkspacePool_GetNormalizesLookupAndAllReturnsCopy(t *testing.T) {
+	tmp := t.TempDir()
+	realDir := filepath.Join(tmp, "project")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(tmp, "project-link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skip("symlinks not supported")
+	}
+
+	pool := newWorkspacePool(15 * time.Minute)
+	state := pool.GetOrCreate(realDir)
+	if got := pool.Get(linkDir); got != state {
+		t.Fatalf("Get(symlink) = %p, want existing normalized state %p", got, state)
+	}
+
+	snapshot := pool.All()
+	if len(snapshot) != 1 {
+		t.Fatalf("All() returned %d states, want 1", len(snapshot))
+	}
+	for key := range snapshot {
+		delete(snapshot, key)
+	}
+	if len(pool.All()) != 1 {
+		t.Fatal("mutating All() result should not mutate pool state")
+	}
+}
+
+func TestWorkspaceState_EndTurnDoesNotUnderflow(t *testing.T) {
+	state := newWorkspaceState("/workspace/a")
+
+	state.EndTurn()
+	if state.HasActiveTurn() {
+		t.Fatal("EndTurn without BeginTurn should not create an active turn")
+	}
+
+	state.BeginTurn()
+	state.BeginTurn()
+	if !state.HasActiveTurn() {
+		t.Fatal("expected active turn after two BeginTurn calls")
+	}
+	state.EndTurn()
+	if !state.HasActiveTurn() {
+		t.Fatal("expected one active turn to remain after one EndTurn")
+	}
+	state.EndTurn()
+	if state.HasActiveTurn() {
+		t.Fatal("expected no active turns after balanced EndTurn calls")
+	}
+	state.EndTurn()
+	if state.HasActiveTurn() {
+		t.Fatal("extra EndTurn should leave active turns at zero")
 	}
 }
 

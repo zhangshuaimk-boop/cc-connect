@@ -151,11 +151,13 @@ func (s *recordingSession) waitRecords(t *testing.T, n int) []sendRecord {
 }
 
 type mediaPlatform struct {
-	mu       sync.Mutex
-	texts    []string
-	images   []core.ImageAttachment
-	files    []core.FileAttachment
-	replyCtx []any
+	mu           sync.Mutex
+	texts        []string
+	images       []core.ImageAttachment
+	files        []core.FileAttachment
+	replyCtx     []any
+	sendImageErr error
+	sendFileErr  error
 }
 
 func (p *mediaPlatform) Name() string { return "media" }
@@ -176,6 +178,9 @@ func (p *mediaPlatform) Send(_ context.Context, replyCtx any, content string) er
 func (p *mediaPlatform) SendImage(_ context.Context, replyCtx any, img core.ImageAttachment) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.sendImageErr != nil {
+		return p.sendImageErr
+	}
 	p.images = append(p.images, img)
 	p.replyCtx = append(p.replyCtx, replyCtx)
 	return nil
@@ -183,6 +188,9 @@ func (p *mediaPlatform) SendImage(_ context.Context, replyCtx any, img core.Imag
 func (p *mediaPlatform) SendFile(_ context.Context, replyCtx any, file core.FileAttachment) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.sendFileErr != nil {
+		return p.sendFileErr
+	}
 	p.files = append(p.files, file)
 	p.replyCtx = append(p.replyCtx, replyCtx)
 	return nil
@@ -329,6 +337,71 @@ func TestSendToSessionWithAttachmentsDeliversTextImagesAndFiles(t *testing.T) {
 		if ctx != "reply-ctx-1" {
 			t.Fatalf("reply context = %#v, want original reply context", replyCtx)
 		}
+	}
+}
+
+func TestSendToSessionWithAttachmentsReturnsUploadFailureAfterTextFallback(t *testing.T) {
+	engine, agent, platform := newMediaEngine(t)
+	msg := mediaMessage("establish active session")
+	engine.ReceiveMessage(platform, msg)
+	agent.session.waitRecords(t, 1)
+	platform.waitTextContaining(t, "media ok")
+
+	uploadErr := errors.New("fake upload failed")
+	platform.sendFileErr = uploadErr
+
+	err := engine.SendToSessionWithAttachments(
+		msg.SessionKey,
+		"file is available as text fallback",
+		[]core.ImageAttachment{{MimeType: "image/png", FileName: "before-file.png", Data: []byte("image")}},
+		[]core.FileAttachment{{MimeType: "text/plain", FileName: "fails.txt", Data: []byte("file")}},
+		nil, false)
+	if !errors.Is(err, uploadErr) {
+		t.Fatalf("SendToSessionWithAttachments() error = %v, want upload failure", err)
+	}
+
+	texts, images, files, replyCtx := platform.snapshot()
+	if !containsText(texts, "file is available as text fallback") {
+		t.Fatalf("texts = %#v, want text fallback sent before upload failure", texts)
+	}
+	if len(images) != 1 || images[0].FileName != "before-file.png" {
+		t.Fatalf("images = %#v, want image before failed file upload", images)
+	}
+	if len(files) != 0 {
+		t.Fatalf("files = %#v, want failed upload not recorded", files)
+	}
+	for _, ctx := range replyCtx {
+		if ctx != "reply-ctx-1" {
+			t.Fatalf("reply context = %#v, want original reply context", replyCtx)
+		}
+	}
+}
+
+func TestTextFallbackReferencesSavedFilesWhenPromptIsEmpty(t *testing.T) {
+	workDir := t.TempDir()
+	paths := core.SaveFilesToDisk(workDir, []core.FileAttachment{
+		{MimeType: "text/plain", FileName: "notes.txt", Data: []byte("release notes")},
+		{MimeType: "application/json", FileName: "../unsafe.json", Data: []byte(`{"ok":true}`)},
+	})
+	if len(paths) != 2 {
+		t.Fatalf("SaveFilesToDisk() paths = %#v, want two saved files", paths)
+	}
+
+	prompt := core.AppendFileRefs("", paths)
+	if !strings.Contains(prompt, "Please analyze the attached file(s).") {
+		t.Fatalf("prompt = %q, want attachment-only fallback text", prompt)
+	}
+	if !strings.Contains(prompt, "Files saved locally, please read them:") {
+		t.Fatalf("prompt = %q, want local file reference list", prompt)
+	}
+	if !strings.Contains(prompt, ".cc-connect/attachments/notes.txt") {
+		t.Fatalf("prompt = %q, want notes.txt reference", prompt)
+	}
+	if strings.Contains(prompt, "../unsafe.json") {
+		t.Fatalf("prompt = %q, unsafe path traversal reference leaked", prompt)
+	}
+	if !strings.Contains(prompt, ".cc-connect/attachments/unsafe.json") {
+		t.Fatalf("prompt = %q, want sanitized unsafe.json reference", prompt)
 	}
 }
 

@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/chenhg5/cc-connect/config"
 )
 
 func TestResolveFeishuSetupInputs_AutoModeWithoutCredentialsUsesNew(t *testing.T) {
@@ -227,4 +231,167 @@ func TestSaveQRCodeImage_InvalidPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid path, got nil")
 	}
+}
+
+func TestRunFeishuUsageAndErrorBranches(t *testing.T) {
+	stdout, stderr := captureCronTimerOutput(t, func() {
+		runFeishu(nil)
+	})
+	if stderr != "" {
+		t.Fatalf("runFeishu no args stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "Usage: cc-connect feishu") || !strings.Contains(stdout, "setup") {
+		t.Fatalf("runFeishu no args stdout missing usage:\n%s", stdout)
+	}
+
+	unknown := runFeishuCommandHelper(t, "bogus")
+	if unknown.code == 0 || !strings.Contains(unknown.stderr, "Unknown feishu subcommand: bogus") || !strings.Contains(unknown.stdout, "Usage: cc-connect feishu") {
+		t.Fatalf("unknown feishu command result = %+v, want usage failure", unknown)
+	}
+
+	missingApp := runFeishuCommandHelper(t, "bind", "--project", "demo")
+	if missingApp.code == 0 || !strings.Contains(missingApp.stderr, "bind mode requires credentials") {
+		t.Fatalf("missing app result = %+v, want credentials failure", missingApp)
+	}
+
+	invalidPlatform := runFeishuCommandHelper(t, "setup", "--project", "demo", "--platform-type", "slack")
+	if invalidPlatform.code == 0 || !strings.Contains(invalidPlatform.stderr, "invalid --platform-type") {
+		t.Fatalf("invalid platform result = %+v, want platform validation failure", invalidPlatform)
+	}
+}
+
+func TestRunFeishuSetup_MissingProjectConfigFailsBeforeNetwork(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("language = \"en\"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result := runFeishuCommandHelper(t, "setup", "--config", configPath)
+	if result.code == 0 || !strings.Contains(result.stderr, "no project found in config") {
+		t.Fatalf("feishu setup empty config result = %+v, want no project failure", result)
+	}
+}
+
+func TestResolveTargetProject_ConfigSelection(t *testing.T) {
+	origPath := config.ConfigPath
+	t.Cleanup(func() { config.ConfigPath = origPath })
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[projects]]
+name = "beta"
+
+[[projects.platforms]]
+type = "feishu"
+
+[[projects]]
+name = "alpha"
+
+[[projects.platforms]]
+type = "lark"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	config.ConfigPath = configPath
+
+	got, err := resolveTargetProject(" explicit ")
+	if err != nil {
+		t.Fatalf("resolve explicit project returned error: %v", err)
+	}
+	if got != "explicit" {
+		t.Fatalf("explicit project = %q, want trimmed value", got)
+	}
+
+	_, err = resolveTargetProject("")
+	if err == nil || !strings.Contains(err.Error(), "multiple projects found") || !strings.Contains(err.Error(), "alpha, beta") {
+		t.Fatalf("resolve multiple projects error = %v, want sorted ambiguity", err)
+	}
+
+	oneProject := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(oneProject, []byte(`
+[[projects]]
+name = "only"
+
+[[projects.platforms]]
+type = "feishu"
+`), 0o644); err != nil {
+		t.Fatalf("write one project config: %v", err)
+	}
+	config.ConfigPath = oneProject
+	got, err = resolveTargetProject("")
+	if err != nil {
+		t.Fatalf("resolve one project returned error: %v", err)
+	}
+	if got != "only" {
+		t.Fatalf("single project = %q, want only", got)
+	}
+}
+
+func TestFeishuGuidanceOutputBranches(t *testing.T) {
+	stdout, stderr := captureCronTimerOutput(t, func() {
+		printBotMenuGuidance("lark")
+	})
+	if stderr != "" {
+		t.Fatalf("printBotMenuGuidance stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "https://open.larksuite.com/app") || !strings.Contains(stdout, "/whoami") {
+		t.Fatalf("lark guidance output missing expected content:\n%s", stdout)
+	}
+
+	stdout, stderr = captureCronTimerOutput(t, func() {
+		printAllowFromGuidance("bad-app", "bad-secret", "ou_owner", &config.FeishuCredentialUpdateResult{
+			PlatformType: "feishu",
+			AllowFrom:    "",
+		})
+	})
+	if stderr != "" {
+		t.Fatalf("printAllowFromGuidance stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "allow_from") || !strings.Contains(stdout, "/whoami") {
+		t.Fatalf("allow_from guidance output missing expected content:\n%s", stdout)
+	}
+}
+
+type p9FeishuCommandResult struct {
+	stdout string
+	stderr string
+	code   int
+}
+
+func runFeishuCommandHelper(t *testing.T, args ...string) p9FeishuCommandResult {
+	t.Helper()
+	cmdArgs := append([]string{"-test.run=TestP9FeishuCommandHelperProcess", "--"}, args...)
+	cmd := exec.Command(os.Args[0], cmdArgs...)
+	cmd.Env = append(os.Environ(), "CC_CONNECT_P9_FEISHU_HELPER=1")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	result := p9FeishuCommandResult{stdout: stdout.String(), stderr: stderr.String()}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		result.code = exitErr.ExitCode()
+		return result
+	}
+	if err != nil {
+		t.Fatalf("run feishu helper command: %v", err)
+	}
+	return result
+}
+
+func TestP9FeishuCommandHelperProcess(t *testing.T) {
+	if os.Getenv("CC_CONNECT_P9_FEISHU_HELPER") != "1" {
+		return
+	}
+	idx := -1
+	for i, arg := range os.Args {
+		if arg == "--" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		os.Exit(2)
+	}
+	runFeishu(os.Args[idx+1:])
+	os.Exit(0)
 }

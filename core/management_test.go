@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -60,6 +61,9 @@ func testManagementServer(t *testing.T, token string) (*ManagementServer, *httpt
 	mux.HandleFunc(prefix+"/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
 	mux.HandleFunc(prefix+"/cron", mgmt.wrap(mgmt.handleCron))
 	mux.HandleFunc(prefix+"/cron/", mgmt.wrap(mgmt.handleCronByID))
+	mux.HandleFunc(prefix+"/setup/feishu/begin", mgmt.wrap(mgmt.handleSetupFeishuBegin))
+	mux.HandleFunc(prefix+"/setup/feishu/poll", mgmt.wrap(mgmt.handleSetupFeishuPoll))
+	mux.HandleFunc(prefix+"/setup/feishu/save", mgmt.wrap(mgmt.handleSetupFeishuSave))
 	mux.HandleFunc(prefix+"/providers", mgmt.wrap(mgmt.handleGlobalProviders))
 	mux.HandleFunc(prefix+"/providers/", mgmt.wrap(mgmt.handleGlobalProviderRoutes))
 	mux.HandleFunc(prefix+"/skills", mgmt.wrap(mgmt.handleSkills))
@@ -290,6 +294,37 @@ func TestMgmt_ProjectDetail(t *testing.T) {
 	r = mgmtGet(t, ts.URL+"/api/v1/projects/nonexistent", "tok")
 	if r.OK {
 		t.Fatal("expected 404 for nonexistent project")
+	}
+}
+
+func TestMgmt_ProjectDetail_MethodBoundaries(t *testing.T) {
+	_, ts, _ := testManagementServer(t, "tok")
+
+	req, _ := http.NewRequest("PATCH", ts.URL+"/api/v1/projects/test-project", strings.NewReader("{bad"))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH project invalid json: %v", err)
+	}
+	var decoded mgmtResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode invalid json response: %v", err)
+	}
+	resp.Body.Close()
+	if decoded.OK {
+		t.Fatal("expected invalid JSON response to fail")
+	}
+	if !strings.Contains(decoded.Error, "invalid JSON") {
+		t.Fatalf("error = %q, want invalid JSON", decoded.Error)
+	}
+
+	r := mgmtPost(t, ts.URL+"/api/v1/projects/test-project", "tok", nil)
+	if r.OK {
+		t.Fatal("expected POST on project detail to fail")
+	}
+	if !strings.Contains(r.Error, "GET, PATCH or DELETE only") {
+		t.Fatalf("error = %q", r.Error)
 	}
 }
 
@@ -785,6 +820,77 @@ func TestMgmt_BridgeWebSocketPathWorksWhenBridgeServerSetAfterHandlerBuild(t *te
 	}
 }
 
+func TestMgmt_StaticFallbackServesExactAssetAndSPARoute(t *testing.T) {
+	prevAssets := GetWebAssets()
+	RegisterWebAssets(fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<html>app shell</html>")},
+		"app.js":     &fstest.MapFile{Data: []byte("console.log('app')")},
+	})
+	t.Cleanup(func() { RegisterWebAssets(prevAssets) })
+
+	mgmt := NewManagementServer(0, "tok", []string{"http://localhost:3000"})
+	mux := http.NewServeMux()
+	ts := httptest.NewServer(mgmt.buildHandler(mux))
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/app.js", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET static asset: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("asset status = %d, body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "console.log") {
+		t.Fatalf("asset body = %q", body)
+	}
+	if resp.Header.Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Fatalf("CORS origin = %q", resp.Header.Get("Access-Control-Allow-Origin"))
+	}
+
+	resp, err = http.Get(ts.URL + "/nested/spa/route")
+	if err != nil {
+		t.Fatalf("GET spa route: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("spa status = %d, body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "app shell") {
+		t.Fatalf("spa body = %q, want index fallback", body)
+	}
+}
+
+func TestMgmt_StaticFallbackAPIRoutesStayOnAPIMux(t *testing.T) {
+	prevAssets := GetWebAssets()
+	RegisterWebAssets(fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<html>app shell</html>")},
+	})
+	t.Cleanup(func() { RegisterWebAssets(prevAssets) })
+
+	mgmt := NewManagementServer(0, "", nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("api-pong"))
+	})
+	ts := httptest.NewServer(mgmt.withStaticFallback(mux))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/ping")
+	if err != nil {
+		t.Fatalf("GET api route: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(body) != "api-pong" {
+		t.Fatalf("api body = %q, want api-pong", body)
+	}
+}
+
 func TestMgmt_MethodNotAllowed(t *testing.T) {
 	_, ts, _ := testManagementServer(t, "tok")
 
@@ -1063,6 +1169,99 @@ func TestMgmt_AddPlatformToNewProject_DoesNotRequireEngine(t *testing.T) {
 	}
 }
 
+func TestMgmt_AddPlatform_Boundaries(t *testing.T) {
+	_, ts, _ := testManagementServer(t, "tok")
+
+	r := mgmtGet(t, ts.URL+"/api/v1/projects/test-project/add-platform", "tok")
+	if r.OK {
+		t.Fatal("expected GET on add-platform to fail")
+	}
+	if !strings.Contains(r.Error, "POST only") {
+		t.Fatalf("error = %q", r.Error)
+	}
+
+	r = mgmtPost(t, ts.URL+"/api/v1/projects/test-project/add-platform", "tok", map[string]any{})
+	if r.OK {
+		t.Fatal("expected missing platform type to fail")
+	}
+	if !strings.Contains(r.Error, "type is required") {
+		t.Fatalf("error = %q", r.Error)
+	}
+
+	r = mgmtPost(t, ts.URL+"/api/v1/projects/test-project/add-platform", "tok", map[string]any{"type": "feishu"})
+	if r.OK {
+		t.Fatal("expected add-platform without persistence callback to fail")
+	}
+	if !strings.Contains(r.Error, "config persistence not available") {
+		t.Fatalf("error = %q", r.Error)
+	}
+}
+
+func TestMgmt_SetupFeishuSaveBoundaries(t *testing.T) {
+	_, ts, _ := testManagementServer(t, "tok")
+
+	r := mgmtGet(t, ts.URL+"/api/v1/setup/feishu/save", "tok")
+	if r.OK {
+		t.Fatal("expected GET on setup save to fail")
+	}
+	if !strings.Contains(r.Error, "POST only") {
+		t.Fatalf("error = %q", r.Error)
+	}
+
+	r = mgmtPost(t, ts.URL+"/api/v1/setup/feishu/save", "tok", map[string]string{
+		"project": "test-project",
+		"app_id":  "cli_a",
+	})
+	if r.OK {
+		t.Fatal("expected missing app_secret to fail")
+	}
+	if !strings.Contains(r.Error, "project, app_id, app_secret required") {
+		t.Fatalf("error = %q", r.Error)
+	}
+
+	r = mgmtPost(t, ts.URL+"/api/v1/setup/feishu/save", "tok", map[string]string{
+		"project":    "test-project",
+		"app_id":     "cli_a",
+		"app_secret": "secret",
+	})
+	if r.OK {
+		t.Fatal("expected setup save without callback to fail")
+	}
+	if !strings.Contains(r.Error, "feishu setup save not configured") {
+		t.Fatalf("error = %q", r.Error)
+	}
+}
+
+func TestMgmt_SetupFeishuSaveSuccess(t *testing.T) {
+	mgmt, ts, _ := testManagementServer(t, "tok")
+	var saved FeishuSetupSaveRequest
+	mgmt.SetSetupFeishuSave(func(req FeishuSetupSaveRequest) error {
+		saved = req
+		return nil
+	})
+
+	r := mgmtPost(t, ts.URL+"/api/v1/setup/feishu/save", "tok", map[string]string{
+		"project":       "test-project",
+		"app_id":        "cli_a",
+		"app_secret":    "secret",
+		"platform_type": "lark",
+		"owner_open_id": "ou_1",
+	})
+	if !r.OK {
+		t.Fatalf("setup save failed: %s", r.Error)
+	}
+	if saved.ProjectName != "test-project" || saved.PlatformType != "lark" || saved.OwnerOpenID != "ou_1" {
+		t.Fatalf("saved request = %#v", saved)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(r.Data, &data); err != nil {
+		t.Fatalf("unmarshal setup save response: %v", err)
+	}
+	if data["restart_required"] != true {
+		t.Fatalf("restart_required = %v, want true", data["restart_required"])
+	}
+}
+
 func TestMgmt_OtherRoutesStillRequireEngine(t *testing.T) {
 	_, ts, _ := testManagementServer(t, "tok")
 
@@ -1211,6 +1410,39 @@ func TestMgmt_GlobalSettings_PatchSaveError(t *testing.T) {
 	}
 	if !strings.Contains(r.Error, "write failed") {
 		t.Fatalf("error = %q, want write failed", r.Error)
+	}
+}
+
+func TestMgmt_GlobalSettings_MethodAndMalformedPayload(t *testing.T) {
+	_, ts, _ := testManagementServer(t, "tok")
+
+	r := mgmtDelete(t, ts.URL+"/api/v1/settings", "tok")
+	if r.OK {
+		t.Fatal("expected DELETE on settings to fail")
+	}
+	if !strings.Contains(r.Error, "GET or PATCH only") {
+		t.Fatalf("error = %q", r.Error)
+	}
+
+	mgmt, ts, _ := testManagementServer(t, "tok")
+	mgmt.SetSaveGlobalSettings(func(updates map[string]any) error { return nil })
+	req, _ := http.NewRequest("PATCH", ts.URL+"/api/v1/settings", strings.NewReader("{bad"))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH malformed settings: %v", err)
+	}
+	defer resp.Body.Close()
+	var decoded mgmtResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode malformed settings response: %v", err)
+	}
+	if decoded.OK {
+		t.Fatal("expected malformed settings patch to fail")
+	}
+	if !strings.Contains(decoded.Error, "invalid JSON") {
+		t.Fatalf("error = %q, want invalid JSON", decoded.Error)
 	}
 }
 

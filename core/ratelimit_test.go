@@ -95,3 +95,84 @@ func TestRateLimiter_StopDisabled(t *testing.T) {
 	rl := NewRateLimiter(0, time.Minute)
 	rl.Stop()
 }
+
+func TestRateLimiter_BurstExactlyAtLimit(t *testing.T) {
+	rl := NewRateLimiter(1, time.Minute)
+	defer rl.Stop()
+
+	if !rl.Allow("user1") {
+		t.Fatal("first request should be allowed")
+	}
+	if rl.Allow("user1") {
+		t.Fatal("second request in same window should be blocked")
+	}
+	if !rl.Allow("user2") {
+		t.Fatal("different key should get its own burst allowance")
+	}
+}
+
+func TestRateLimiter_ResetAfterWindow(t *testing.T) {
+	rl := NewRateLimiter(1, time.Nanosecond)
+	defer rl.Stop()
+
+	if !rl.Allow("user1") {
+		t.Fatal("first request should be allowed")
+	}
+	if !rl.Allow("user1") {
+		t.Fatal("zero millisecond window should reset on each call")
+	}
+}
+
+func TestRateLimiter_NegativeConfigDisablesLimit(t *testing.T) {
+	rl := NewRateLimiter(-1, time.Minute)
+	defer rl.Stop()
+
+	for i := 0; i < 10; i++ {
+		if !rl.Allow("user1") {
+			t.Fatalf("request %d should be allowed when maxMessages is negative", i+1)
+		}
+	}
+}
+
+func TestRateLimiter_ZeroWindowOnlyAllowsFirstBurst(t *testing.T) {
+	rl := NewRateLimiter(2, 0)
+	defer rl.Stop()
+
+	if !rl.Allow("user1") {
+		t.Fatal("first request should be allowed")
+	}
+	if !rl.Allow("user1") {
+		t.Fatal("second request should be allowed at burst limit")
+	}
+	if !rl.Allow("user1") {
+		t.Fatal("zero window should expire previous timestamps before enforcing the next burst")
+	}
+}
+
+func TestRateLimiter_ConcurrentSameKeyHonorsLimit(t *testing.T) {
+	rl := NewRateLimiter(25, time.Minute)
+	defer rl.Stop()
+
+	const workers = 100
+	var wg sync.WaitGroup
+	results := make(chan bool, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- rl.Allow("user1")
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	allowed := 0
+	for ok := range results {
+		if ok {
+			allowed++
+		}
+	}
+	if allowed != 25 {
+		t.Fatalf("allowed = %d, want exactly 25", allowed)
+	}
+}

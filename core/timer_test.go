@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -323,6 +324,80 @@ func TestTimerScheduler_Cancellation(t *testing.T) {
 	}
 }
 
+func TestTimerScheduler_RemoveDueJobBeforeCallbackSkipsExecution(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewTimerStore(dir)
+	if err != nil {
+		t.Fatalf("NewTimerStore: %v", err)
+	}
+
+	sched := NewTimerScheduler(store)
+	p := &stubPlatformEngine{n: "feishu"}
+	agentSession := newResultAgentSession("should not send")
+	engine := NewEngine("test", &resultAgent{session: agentSession}, []Platform{p}, "", LangEnglish)
+	defer engine.cancel()
+	sched.RegisterEngine("test", engine)
+
+	job := &TimerJob{
+		ID:          "cancel-due",
+		Project:     "test",
+		SessionKey:  "feishu:chat1:user1",
+		ScheduledAt: time.Now().Add(time.Hour),
+		Prompt:      "test",
+		CreatedAt:   time.Now(),
+	}
+	if err := sched.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	if !sched.RemoveJob("cancel-due") {
+		t.Fatal("RemoveJob returned false")
+	}
+
+	sched.executeJob("cancel-due")
+
+	if store.Get("cancel-due") != nil {
+		t.Fatal("removed job should stay absent from store")
+	}
+	if len(agentSession.sentPrompts) != 0 {
+		t.Fatalf("agent prompts = %v, want none", agentSession.sentPrompts)
+	}
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("platform sent = %v, want none", sent)
+	}
+}
+
+func TestTimerScheduler_ExecuteJob_ProjectMissingMarksFiredError(t *testing.T) {
+	store, err := NewTimerStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := NewTimerScheduler(store)
+	job := &TimerJob{
+		ID:          "missing-project",
+		Project:     "ghost",
+		SessionKey:  "feishu:chat1:user1",
+		ScheduledAt: time.Now(),
+		Prompt:      "test",
+		CreatedAt:   time.Now(),
+	}
+	if err := store.Add(job); err != nil {
+		t.Fatal(err)
+	}
+
+	sched.executeJob(job.ID)
+
+	got := store.Get(job.ID)
+	if got == nil {
+		t.Fatal("job not found")
+	}
+	if !got.Fired {
+		t.Fatal("job should be marked fired")
+	}
+	if !strings.Contains(got.LastError, `project "ghost" not found`) {
+		t.Fatalf("LastError = %q, want missing project", got.LastError)
+	}
+}
+
 func TestTimerScheduler_Recovery(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewTimerStore(dir)
@@ -524,5 +599,99 @@ func TestTimerStore_FilePath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(store.path)); err != nil {
 		t.Errorf("timers directory not created: %v", err)
+	}
+}
+
+func TestTimerJob_ExecutionTimeoutAndSessionMode(t *testing.T) {
+	job := &TimerJob{}
+	if got := job.ExecutionTimeout(); got != defaultTimerJobTimeout {
+		t.Fatalf("nil TimeoutMins: got %v, want %v", got, defaultTimerJobTimeout)
+	}
+	zero := 0
+	job.TimeoutMins = &zero
+	if got := job.ExecutionTimeout(); got != 0 {
+		t.Fatalf("TimeoutMins=0: got %v, want 0", got)
+	}
+	two := 2
+	job.TimeoutMins = &two
+	if got := job.ExecutionTimeout(); got != 2*time.Minute {
+		t.Fatalf("TimeoutMins=2: got %v, want 2m", got)
+	}
+
+	for _, mode := range []string{"new_per_run", "new-per-run", "NEW_PER_RUN"} {
+		job.SessionMode = mode
+		if !job.UsesNewSessionPerRun() {
+			t.Fatalf("UsesNewSessionPerRun(%q) = false, want true", mode)
+		}
+	}
+	job.SessionMode = "reuse"
+	if job.UsesNewSessionPerRun() {
+		t.Fatal("reuse should not use a new session")
+	}
+}
+
+func TestTimerScheduler_DefaultSilentAndSessionMode(t *testing.T) {
+	store, err := NewTimerStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := NewTimerScheduler(store)
+
+	job := &TimerJob{}
+	if ts.IsSilent(job) {
+		t.Fatal("zero default should not be silent")
+	}
+	ts.SetDefaultSilent(true)
+	if !ts.IsSilent(job) {
+		t.Fatal("default silent was not applied")
+	}
+	explicitFalse := false
+	job.Silent = &explicitFalse
+	if ts.IsSilent(job) {
+		t.Fatal("job-level silent=false should override default")
+	}
+
+	ts.SetDefaultSessionMode("new-per-run")
+	job.SessionMode = ""
+	if !ts.UsesNewSession(job) {
+		t.Fatal("default new-per-run should use a new session")
+	}
+	job.SessionMode = "reuse"
+	if ts.UsesNewSession(job) {
+		t.Fatal("job reuse should override default new session mode")
+	}
+	job.SessionMode = "new_per_run"
+	ts.SetDefaultSessionMode("")
+	if !ts.UsesNewSession(job) {
+		t.Fatal("job new_per_run should use a new session")
+	}
+}
+
+func TestTimerScheduler_SetMuteAndStore(t *testing.T) {
+	store, err := NewTimerStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := NewTimerScheduler(store)
+	job := &TimerJob{
+		ID:          "mute-me",
+		Project:     "test",
+		SessionKey:  "feishu:chat1:user1",
+		ScheduledAt: time.Now().Add(time.Hour),
+		Prompt:      "test",
+		CreatedAt:   time.Now(),
+	}
+	if err := store.Add(job); err != nil {
+		t.Fatal(err)
+	}
+
+	if ts.Store() != store {
+		t.Fatal("Store() did not return backing store")
+	}
+	if !ts.SetMute(job.ID, true) {
+		t.Fatal("SetMute returned false")
+	}
+	if got := store.Get(job.ID); got == nil || !got.Mute {
+		t.Fatalf("stored job = %#v, want muted", got)
 	}
 }

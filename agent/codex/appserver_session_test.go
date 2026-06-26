@@ -1,12 +1,8 @@
 package codex
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -303,61 +299,3 @@ var _ interface {
 var _ interface {
 	GetContextUsage() *core.ContextUsage
 } = (*appServerSession)(nil)
-
-type lockedWriteCloser struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (w *lockedWriteCloser) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.Write(p)
-}
-
-func (w *lockedWriteCloser) Close() error { return nil }
-
-func (w *lockedWriteCloser) String() string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.String()
-}
-
-var _ io.WriteCloser = (*lockedWriteCloser)(nil)
-
-func serverRequestProbe(t *testing.T, idJSON, method string, params any) map[string]json.RawMessage {
-	t.Helper()
-	paramsJSON, err := json.Marshal(params)
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
-	}
-	methodJSON, err := json.Marshal(method)
-	if err != nil {
-		t.Fatalf("marshal method: %v", err)
-	}
-	return map[string]json.RawMessage{
-		"id":     json.RawMessage(idJSON),
-		"method": methodJSON,
-		"params": paramsJSON,
-	}
-}
-
-func waitForWrittenJSONLine(t *testing.T, w *lockedWriteCloser) string {
-	t.Helper()
-	deadline := time.After(time.Second)
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for JSON response, buffer=%q", w.String())
-		case <-ticker.C:
-			for _, line := range strings.Split(w.String(), "\n") {
-				line = strings.TrimSpace(line)
-				if line != "" {
-					return line
-				}
-			}
-		}
-	}
-}

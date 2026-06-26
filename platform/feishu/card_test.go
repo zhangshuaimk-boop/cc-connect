@@ -1,7 +1,10 @@
 package feishu
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -263,6 +266,247 @@ func TestRenderCardMap_InjectsSessionKeyIntoCallbacks(t *testing.T) {
 	selectValue := selectActions[0]["value"].(map[string]string)
 	if selectValue["session_key"] != "feishu:oc_chat:root:om_root" {
 		t.Fatalf("select session_key = %#v, want thread session key", selectValue["session_key"])
+	}
+}
+
+func TestRenderCardMap_NilAndEmptyCardUseBlankMarkdown(t *testing.T) {
+	nilCard := renderCardMap(nil, "")
+	if _, ok := nilCard["elements"]; ok {
+		t.Fatalf("nil card should only render base config, got %#v", nilCard)
+	}
+
+	emptyCard := renderCardMap(&core.Card{}, "")
+	elements, ok := emptyCard["elements"].([]map[string]any)
+	if !ok || len(elements) != 1 {
+		t.Fatalf("empty card elements = %#v, want one blank markdown element", emptyCard["elements"])
+	}
+	if elements[0]["tag"] != "markdown" || elements[0]["content"] != " " {
+		t.Fatalf("empty card element = %#v, want blank markdown", elements[0])
+	}
+}
+
+func TestRenderCardMap_SelectWithoutSessionKeyOmitsValue(t *testing.T) {
+	card := core.NewCard().
+		Select("Pick", []core.CardSelectOption{{Text: "A", Value: "a"}}, "a").
+		Build()
+
+	got := renderCardMap(card, "")
+	elements := got["elements"].([]map[string]any)
+	actionRow := elements[0]
+	actions := actionRow["actions"].([]map[string]any)
+	selectElem := actions[0]
+	if _, ok := selectElem["value"]; ok {
+		t.Fatalf("select value should be omitted without session key: %#v", selectElem)
+	}
+	if selectElem["initial_option"] != "a" {
+		t.Fatalf("initial_option = %#v, want a", selectElem["initial_option"])
+	}
+}
+
+func TestRenderDeleteModeCheckerCardRejectsNonDeleteModeShapes(t *testing.T) {
+	base := map[string]any{"config": map[string]any{"wide_screen_mode": true}}
+	tests := []struct {
+		name string
+		card *core.Card
+	}{
+		{"nil", nil},
+		{"unknown list action", core.NewCard().ListItemBtn("one", "Select", "default", "act:/other").Build()},
+		{"markdown element", core.NewCard().Markdown("not delete mode").Build()},
+		{"missing submit", core.NewCard().ListItemBtn("◻ one", "Select", "default", "act:/delete-mode toggle s1").Build()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, ok := renderDeleteModeCheckerCard(tt.card, base); ok || got != nil {
+				t.Fatalf("renderDeleteModeCheckerCard() = %#v, %v; want nil false", got, ok)
+			}
+		})
+	}
+}
+
+func TestReplyCardRepliesWhenReplyAPIAllowed(t *testing.T) {
+	const appID = "reply_card_app"
+	const appSecret = "reply_card_secret"
+
+	replyCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
+			sendAPITestAuthHandler(t, w, "reply-card-token")
+		case strings.HasSuffix(r.URL.Path, "/reply"):
+			replyCalls++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode reply body: %v", err)
+			}
+			if body["msg_type"] != "interactive" {
+				t.Fatalf("reply msg_type = %#v, want interactive", body["msg_type"])
+			}
+			if !strings.Contains(body["content"].(string), "reply card") {
+				t.Fatalf("reply content = %q, want card title", body["content"])
+			}
+			writeJSON(t, w, map[string]any{
+				"code": 0,
+				"msg":  "success",
+				"data": map[string]any{"message_id": "om_reply_card"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p := newSendAPITestPlatform(appID, appSecret, srv.URL, srv.Client())
+	ip := &interactivePlatform{Platform: p}
+	err := ip.ReplyCard(context.Background(), replyContext{messageID: "om_root", chatID: "oc_chat"}, &core.Card{
+		Header: &core.CardHeader{Title: "reply card"},
+	})
+	if err != nil {
+		t.Fatalf("ReplyCard() error = %v", err)
+	}
+	if replyCalls != 1 {
+		t.Fatalf("replyCalls = %d, want 1", replyCalls)
+	}
+}
+
+func TestReplyCardFallsBackToCreateWhenReplyDisabled(t *testing.T) {
+	const appID = "reply_card_create_app"
+	const appSecret = "reply_card_create_secret"
+
+	createCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
+			sendAPITestAuthHandler(t, w, "reply-card-create-token")
+		case r.URL.Path == "/open-apis/im/v1/messages":
+			createCalls++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode create body: %v", err)
+			}
+			if body["receive_id"] != "oc_chat" || body["msg_type"] != "interactive" {
+				t.Fatalf("unexpected create body: %#v", body)
+			}
+			writeJSON(t, w, map[string]any{
+				"code": 0,
+				"msg":  "success",
+				"data": map[string]any{"message_id": "om_created_card"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p := newSendAPITestPlatform(appID, appSecret, srv.URL, srv.Client())
+	p.noReplyToTrigger = true
+	ip := &interactivePlatform{Platform: p}
+	if err := ip.ReplyCard(context.Background(), replyContext{messageID: "om_root", chatID: "oc_chat"}, core.NewCard().Markdown("created").Build()); err != nil {
+		t.Fatalf("ReplyCard() error = %v", err)
+	}
+	if createCalls != 1 {
+		t.Fatalf("createCalls = %d, want 1", createCalls)
+	}
+}
+
+func TestSendCardRepliesInThreadWhenConfigured(t *testing.T) {
+	const appID = "send_card_thread_app"
+	const appSecret = "send_card_thread_secret"
+
+	replyCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
+			sendAPITestAuthHandler(t, w, "thread-card-token")
+		case strings.HasSuffix(r.URL.Path, "/reply"):
+			replyCalls++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode reply body: %v", err)
+			}
+			if body["reply_in_thread"] != true {
+				t.Fatalf("reply_in_thread = %#v, want true; body=%#v", body["reply_in_thread"], body)
+			}
+			writeJSON(t, w, map[string]any{
+				"code": 0,
+				"msg":  "success",
+				"data": map[string]any{"message_id": "om_thread_card"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p := newSendAPITestPlatform(appID, appSecret, srv.URL, srv.Client())
+	p.threadIsolation = true
+	ip := &interactivePlatform{Platform: p}
+	rc := replyContext{messageID: "om_root", chatID: "oc_chat", sessionKey: "feishu:oc_chat:root:om_root"}
+	if err := ip.SendCard(context.Background(), rc, core.NewCard().Markdown("thread").Build()); err != nil {
+		t.Fatalf("SendCard() error = %v", err)
+	}
+	if replyCalls != 1 {
+		t.Fatalf("replyCalls = %d, want 1", replyCalls)
+	}
+}
+
+func TestCardAPIsRejectInvalidContextAndMissingTargets(t *testing.T) {
+	p := &interactivePlatform{Platform: &Platform{platformName: "feishu"}}
+
+	if err := p.ReplyCard(context.Background(), "bad", nil); err == nil || !strings.Contains(err.Error(), "invalid reply context") {
+		t.Fatalf("ReplyCard invalid context error = %v, want invalid reply context", err)
+	}
+	if err := p.SendCard(context.Background(), "bad", nil); err == nil || !strings.Contains(err.Error(), "invalid reply context") {
+		t.Fatalf("SendCard invalid context error = %v, want invalid reply context", err)
+	}
+	if err := p.ReplyCard(context.Background(), replyContext{}, nil); err == nil || !strings.Contains(err.Error(), "chatID is empty") {
+		t.Fatalf("ReplyCard empty chat error = %v, want chatID error", err)
+	}
+	if err := p.SendCard(context.Background(), replyContext{}, nil); err == nil || !strings.Contains(err.Error(), "chatID is empty") {
+		t.Fatalf("SendCard empty chat error = %v, want chatID error", err)
+	}
+	if err := p.RefreshCard(context.Background(), "missing", nil); err == nil || !strings.Contains(err.Error(), "no tracked card messageID") {
+		t.Fatalf("RefreshCard missing message error = %v, want tracked message error", err)
+	}
+}
+
+func TestRefreshCardPatchesTrackedMessage(t *testing.T) {
+	const appID = "refresh_card_app"
+	const appSecret = "refresh_card_secret"
+
+	patchCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
+			sendAPITestAuthHandler(t, w, "refresh-card-token")
+		case strings.Contains(r.URL.Path, "/messages/") && r.Method == http.MethodPatch:
+			patchCalls++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode patch body: %v", err)
+			}
+			if !strings.Contains(body["content"].(string), "refreshed") {
+				t.Fatalf("patch content = %q, want refreshed card", body["content"])
+			}
+			writeJSON(t, w, map[string]any{"code": 0, "msg": "success"})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p := newSendAPITestPlatform(appID, appSecret, srv.URL, srv.Client())
+	p.cardActionMsgIDs = map[string]string{"session-1": "om_card"}
+	ip := &interactivePlatform{Platform: p}
+	if err := ip.RefreshCard(context.Background(), "session-1", core.NewCard().Markdown("refreshed").Build()); err != nil {
+		t.Fatalf("RefreshCard() error = %v", err)
+	}
+	if patchCalls != 1 {
+		t.Fatalf("patchCalls = %d, want 1", patchCalls)
 	}
 }
 

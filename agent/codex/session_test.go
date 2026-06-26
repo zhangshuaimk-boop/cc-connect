@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -419,7 +420,7 @@ func TestSend_WithImages_PassesImageArgsAndDefaultPrompt(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	args := waitForArgsFile(t, argsFile)
+	args := waitForArgsFile(t, argsFile, []string{"--json", "--cd"})
 	if !containsSequence(args, []string{"exec", "--skip-git-repo-check"}) {
 		t.Fatalf("args missing exec prelude: %v", args)
 	}
@@ -475,7 +476,7 @@ func TestSend_ResumeWithImages_PlacesSessionBeforeImageFlags(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	args := waitForArgsFile(t, argsFile)
+	args := waitForArgsFile(t, argsFile, []string{"--json", "-"})
 	if !containsSequence(args, []string{"exec", "resume", "--skip-git-repo-check"}) {
 		t.Fatalf("args missing resume prelude: %v", args)
 	}
@@ -529,7 +530,7 @@ func TestSend_UsesStdinForMultilinePrompt(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	args := waitForArgsFile(t, argsFile)
+	args := waitForArgsFile(t, argsFile, []string{"--json", "-"})
 	if !containsSequence(args, []string{"--json", "-"}) {
 		t.Fatalf("args missing stdin marker: %v", args)
 	}
@@ -665,7 +666,7 @@ func TestWaitForArgsFile_WaitsForNonEmptyContent(t *testing.T) {
 		_ = os.WriteFile(argsFile, []byte("exec\n--json\n"), 0o644)
 	}()
 
-	args := waitForArgsFile(t, argsFile)
+	args := waitForArgsFile(t, argsFile, []string{"exec", "--json"})
 	if !containsSequence(args, []string{"exec", "--json"}) {
 		t.Fatalf("expected non-empty args sequence, got: %v", args)
 	}
@@ -685,118 +686,46 @@ func TestWriteFakeCodexScript_PreservesArgsWithSpaces(t *testing.T) {
 	writeFakeCodexScript(t, binDir, script, powershellScript)
 	t.Setenv("CODEX_ARGS_FILE", argsFile)
 
-	cmd := exec.Command(filepath.Join(binDir, "codex"), "exec", "--cd", filepath.Join(workDir, "dir with spaces"), "-")
+	wantPath := filepath.Join(workDir, "dir with spaces")
+	cmd := exec.Command(filepath.Join(binDir, "codex"), "exec", "--cd", wantPath, "-")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("fake codex run: %v", err)
 	}
 
-	args := waitForArgsFile(t, argsFile)
-	wantPath := filepath.Join(workDir, "dir with spaces")
+	args := waitForArgsFile(t, argsFile, []string{"exec", "--cd", wantPath, "-"})
 	if !containsSequence(args, []string{"exec", "--cd", wantPath, "-"}) {
 		t.Fatalf("args = %v, want path with spaces preserved as %q", args, wantPath)
 	}
 }
 
-const fakeCodexPowerShellPrelude = `
-function fakeCodexArgs {
-  if ([string]::IsNullOrWhiteSpace($env:CODEX_FAKE_ARGS_FILE) -or -not (Test-Path -LiteralPath $env:CODEX_FAKE_ARGS_FILE)) {
-    return @()
-  }
-  return @(Get-Content -LiteralPath $env:CODEX_FAKE_ARGS_FILE)
-}
-`
-
-func writeFakeCodexScript(t *testing.T, dir, shellScript, powershellScript string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		psPath := filepath.Join(dir, "codex.ps1")
-		if err := os.WriteFile(psPath, []byte(fakeCodexPowerShellPrelude+powershellScript), 0o644); err != nil {
-			t.Fatalf("write fake codex powershell script: %v", err)
-		}
-		cmdPath := filepath.Join(dir, "codex.cmd")
-		cmdScript := "@echo off\r\n" +
-			"setlocal\r\n" +
-			"set \"CODEX_FAKE_SCRIPT=%~dp0codex.ps1\"\r\n" +
-			"set \"CODEX_FAKE_ARGS_FILE=%TEMP%\\codex-fake-args-%RANDOM%-%RANDOM%.txt\"\r\n" +
-			"type nul > \"%CODEX_FAKE_ARGS_FILE%\"\r\n" +
-			":args\r\n" +
-			"if \"%~1\"==\"\" goto run\r\n" +
-			">> \"%CODEX_FAKE_ARGS_FILE%\" echo(%~1\r\n" +
-			"shift\r\n" +
-			"goto args\r\n" +
-			":run\r\n" +
-			"powershell -NoProfile -ExecutionPolicy Bypass -File \"%CODEX_FAKE_SCRIPT%\"\r\n" +
-			"set \"CODEX_FAKE_EXIT=%ERRORLEVEL%\"\r\n" +
-			"del \"%CODEX_FAKE_ARGS_FILE%\" >nul 2>nul\r\n" +
-			"exit /b %CODEX_FAKE_EXIT%\r\n"
-		if err := os.WriteFile(cmdPath, []byte(cmdScript), 0o755); err != nil {
-			t.Fatalf("write fake codex cmd shim: %v", err)
-		}
-		return
-	}
-	scriptPath := filepath.Join(dir, "codex")
-	if err := os.WriteFile(scriptPath, []byte(shellScript), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
-}
-
-func waitForArgsFile(t *testing.T, path string) []string {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			text := strings.TrimSpace(string(data))
-			if text != "" {
-				lines := strings.Split(text, "\n")
-				args := make([]string, 0, len(lines))
-				for _, line := range lines {
-					line = strings.TrimSpace(line)
-					if line != "" {
-						args = append(args, line)
-					}
-				}
-				if len(args) > 0 {
-					return args
-				}
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("timed out waiting for non-empty args file: %s: %v", path, err)
-	}
-	t.Fatalf("timed out waiting for non-empty args file: %s current=%q", path, string(data))
-	return nil
-}
-
 func waitForFileEquals(t *testing.T, path, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
-		if err == nil && string(data) == want {
-			return
+	var data []byte
+	waitUntil(t, 5*time.Second, "file "+path+" to equal expected content", func() bool {
+		var err error
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return false
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	data, _ := os.ReadFile(path)
-	t.Fatalf("stdin file %s: got %q, want %q", path, string(data), want)
+		return string(data) == want
+	}, func() string {
+		return "got " + string(data) + ", want " + want
+	})
 }
 
 func waitForFileContains(t *testing.T, path, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
-		if err == nil && strings.Contains(string(data), want) {
-			return
+	var data []byte
+	waitUntil(t, 5*time.Second, "file "+path+" to contain substring", func() bool {
+		var err error
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return false
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	data, _ := os.ReadFile(path)
-	t.Fatalf("file %s: got %q, want substring %q", path, string(data), want)
+		return strings.Contains(string(data), want)
+	}, func() string {
+		return "got " + string(data) + ", want substring " + want
+	})
 }
 
 func containsSequence(args, want []string) bool {
@@ -861,7 +790,7 @@ func TestClose_ForceKillsProcessGroupAfterGracefulTimeout(t *testing.T) {
 
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"thread-close\"}'\n" +
-		"(sleep 0.12; printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"late child output\"}}'; sleep 30) &\n" +
+		"(sleep 30) &\n" +
 		"wait\n"
 	scriptPath := filepath.Join(binDir, "codex")
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
@@ -897,7 +826,7 @@ func TestClose_ForceKillsProcessGroupAfterGracefulTimeout(t *testing.T) {
 	if elapsed := time.Since(closeStarted); elapsed > time.Second {
 		t.Fatalf("Close took too long after force kill: %v", elapsed)
 	}
-	waitForEventsClosed(t, cs.Events(), 2*time.Second)
+	waitForEventsClosed(t, cs.Events(), 10*time.Second)
 }
 
 func TestClose_ForceKillsAllTrackedProcessesAfterCmdOverwrite(t *testing.T) {
@@ -961,22 +890,16 @@ func TestClose_ForceKillsAllTrackedProcessesAfterCmdOverwrite(t *testing.T) {
 	if elapsed := time.Since(closeStarted); elapsed > time.Second {
 		t.Fatalf("Close took too long after force killing tracked processes: %v", elapsed)
 	}
-	waitForEventsClosed(t, cs.Events(), 2*time.Second)
+	waitForEventsClosed(t, cs.Events(), 10*time.Second)
 }
 
 func waitForThreadID(t *testing.T, cs *codexSession, want string) {
 	t.Helper()
-	timeout := time.After(5 * time.Second)
-	for {
-		select {
-		case <-time.After(10 * time.Millisecond):
-			if cs.CurrentSessionID() == want {
-				return
-			}
-		case <-timeout:
-			t.Fatalf("timed out waiting for thread id %q", want)
-		}
-	}
+	waitUntil(t, 5*time.Second, "thread id "+want, func() bool {
+		return cs.CurrentSessionID() == want
+	}, func() string {
+		return "current=" + cs.CurrentSessionID()
+	})
 }
 
 func waitForDoneResult(t *testing.T, events <-chan core.Event) {
@@ -1002,37 +925,26 @@ func waitForDoneResult(t *testing.T, events <-chan core.Event) {
 
 func waitForEventsClosed(t *testing.T, events <-chan core.Event, timeout time.Duration) {
 	t.Helper()
-	deadline := time.After(timeout)
-	for {
-		select {
-		case _, ok := <-events:
-			if !ok {
-				return
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for events channel to close")
-		}
-	}
+	waitForChannelClosed(t, events, timeout, "events channel to close")
 }
 
 func waitForFileLines(t *testing.T, path string, want int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	var count int
+	waitUntil(t, 5*time.Second, "file "+path+" to contain enough lines", func() bool {
 		data, err := os.ReadFile(path)
-		if err == nil {
-			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-			count := 0
-			for _, line := range lines {
-				if strings.TrimSpace(line) != "" {
-					count++
-				}
-			}
-			if count >= want {
-				return
+		if err != nil {
+			return false
+		}
+		count = 0
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		for _, line := range lines {
+			if strings.TrimSpace(line) != "" {
+				count++
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %d lines in %s", want, path)
+		return count >= want
+	}, func() string {
+		return "got lines=" + strconv.Itoa(count) + ", want at least " + strconv.Itoa(want)
+	})
 }

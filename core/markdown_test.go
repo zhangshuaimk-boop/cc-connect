@@ -19,6 +19,10 @@ func TestStripMarkdown(t *testing.T) {
 		{"heading", "# Title\nbody", "Title\nbody"},
 		{"inline code", "use `os.path.join`", "use os.path.join"},
 		{"fenced code block", "```go\nfmt.Println(\"hi\")\n```", "fmt.Println(\"hi\")"},
+		{"fenced code block without newline", "```json{\"ok\":true}```", "{\"ok\":true}"},
+		{"blockquote and horizontal rule", "> quoted\n\n---\n\nbody", "quoted\n\nbody"},
+		{"collapses repeated blank lines", "a\n\n\n\nb", "a\n\nb"},
+		{"link with local path", "[app](src/app.go:12)", "app (src/app.go:12)"},
 
 		// Regression: underscore forms must NOT be stripped, since the same
 		// patterns appear in legitimate identifiers. Stripping them used to

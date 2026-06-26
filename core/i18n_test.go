@@ -36,8 +36,8 @@ func TestI18n_FallbackToEnglish(t *testing.T) {
 func TestI18n_MissingKey(t *testing.T) {
 	i := NewI18n(LangEnglish)
 	got := i.T(MsgKey("totally_missing_key"))
-	if got != "[totally_missing_key]" && got != "" {
-		t.Logf("missing key returned %q (acceptable: placeholder or empty)", got)
+	if got != "totally_missing_key" {
+		t.Fatalf("missing key returned %q, want key string", got)
 	}
 }
 
@@ -165,5 +165,82 @@ func TestIsJapanese(t *testing.T) {
 	}
 	if isJapanese('a') {
 		t.Error("ASCII 'a' should not be Japanese")
+	}
+}
+
+func TestI18n_TraditionalChineseFallsBackToSimplified(t *testing.T) {
+	key := MsgKey("test_only_zh_tw_fallback")
+	messages[key] = map[Language]string{
+		LangChinese: "简体回退",
+	}
+	t.Cleanup(func() {
+		delete(messages, key)
+	})
+
+	i := NewI18n(LangTraditionalChinese)
+	if got := i.T(key); got != "简体回退" {
+		t.Fatalf("T(%q) = %q, want Simplified Chinese fallback", key, got)
+	}
+}
+
+func TestI18n_FallbackToEnglishWhenLanguageMissing(t *testing.T) {
+	key := MsgKey("test_only_english_fallback")
+	messages[key] = map[Language]string{
+		LangEnglish: "english fallback",
+	}
+	t.Cleanup(func() {
+		delete(messages, key)
+	})
+
+	i := NewI18n(LangJapanese)
+	if got := i.T(key); got != "english fallback" {
+		t.Fatalf("T(%q) = %q, want English fallback", key, got)
+	}
+}
+
+func TestI18n_AutoLanguageDefaultsAndPersistsDetection(t *testing.T) {
+	i := NewI18n(LangAuto)
+	if got := i.CurrentLang(); got != LangEnglish {
+		t.Fatalf("CurrentLang before detection = %q, want English fallback", got)
+	}
+
+	var saved []Language
+	i.SetSaveFunc(func(lang Language) error {
+		saved = append(saved, lang)
+		return nil
+	})
+
+	i.DetectAndSet("你好")
+	i.DetectAndSet("你好")
+	if got := i.CurrentLang(); got != LangChinese {
+		t.Fatalf("CurrentLang after detection = %q, want Chinese", got)
+	}
+	if len(saved) != 1 || saved[0] != LangChinese {
+		t.Fatalf("saved languages = %v, want one Chinese save", saved)
+	}
+
+	i.SetLang(LangEnglish)
+	if got := i.CurrentLang(); got != LangEnglish {
+		t.Fatalf("CurrentLang after SetLang = %q, want English", got)
+	}
+	if len(saved) != 1 {
+		t.Fatalf("SetLang should not persist detection, saved = %v", saved)
+	}
+}
+
+func TestI18n_ExplicitLanguageDoesNotAutoDetect(t *testing.T) {
+	i := NewI18n(LangEnglish)
+	called := false
+	i.SetSaveFunc(func(Language) error {
+		called = true
+		return nil
+	})
+
+	i.DetectAndSet("你好")
+	if got := i.CurrentLang(); got != LangEnglish {
+		t.Fatalf("CurrentLang = %q, want explicit English", got)
+	}
+	if called {
+		t.Fatal("save func should not be called for explicit language")
 	}
 }

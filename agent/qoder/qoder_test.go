@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -162,6 +164,95 @@ func TestAgent_SetModel(t *testing.T) {
 	a.mu.Unlock()
 	if got != "gpt-4" {
 		t.Errorf("model = %q, want %q", got, "gpt-4")
+	}
+}
+
+func TestAgentMatrixNewConfigAndWrapperMethods(t *testing.T) {
+	tmp := t.TempDir()
+	fakeCLI := filepath.Join(tmp, "qodercli")
+	if err := os.WriteFile(fakeCLI, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake qodercli: %v", err)
+	}
+
+	agent, err := New(map[string]any{
+		"cmd":      fakeCLI + " --profile unit",
+		"work_dir": "/workspace",
+		"model":    "ultimate",
+		"mode":     "bypass",
+		"env": map[string]any{
+			"STATIC_ENV": "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a := agent.(*Agent)
+
+	if a.CLIBinaryName() != fakeCLI {
+		t.Fatalf("CLIBinaryName() = %q, want %q", a.CLIBinaryName(), fakeCLI)
+	}
+	if a.GetWorkDir() != "/workspace" || a.GetModel() != "ultimate" || a.GetMode() != "yolo" {
+		t.Fatalf("New captured workDir=%q model=%q mode=%q", a.GetWorkDir(), a.GetModel(), a.GetMode())
+	}
+	if got := a.AvailableModels(context.Background()); len(got) != 5 || got[0].Name != "auto" {
+		t.Fatalf("AvailableModels() = %#v", got)
+	}
+	if got, err := a.ListSessions(context.Background()); err != nil || got != nil {
+		t.Fatalf("ListSessions() = %#v, %v; want nil, nil", got, err)
+	}
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop(): %v", err)
+	}
+	if a.CompressCommand() != "/compact" {
+		t.Fatalf("CompressCommand() = %q, want /compact", a.CompressCommand())
+	}
+
+	a.SetMode("unknown")
+	if got := a.GetMode(); got != "default" {
+		t.Fatalf("SetMode(unknown) produced %q, want default", got)
+	}
+	a.SetSessionEnv([]string{"TURN_ENV=2"})
+	sess, err := a.StartSession(context.Background(), "resume-qoder")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	defer sess.Close()
+	qs := sess.(*qoderSession)
+	if qs.CurrentSessionID() != "resume-qoder" {
+		t.Fatalf("CurrentSessionID() = %q, want resume-qoder", qs.CurrentSessionID())
+	}
+	for _, want := range []string{"STATIC_ENV=1", "TURN_ENV=2"} {
+		if !qoderStringSliceContains(qs.extraEnv, want) {
+			t.Fatalf("extraEnv missing %q: %#v", want, qs.extraEnv)
+		}
+	}
+	if !qoderStringSliceContains(qs.extraArgs, "--profile") || !qoderStringSliceContains(qs.extraArgs, "unit") {
+		t.Fatalf("extraArgs = %#v, want profile args", qs.extraArgs)
+	}
+}
+
+func TestAgentMatrixMemoryAndSkillPaths(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	work := filepath.Join(tmp, "work")
+	t.Setenv("HOME", home)
+
+	a := &Agent{workDir: work}
+	if got := a.ProjectMemoryFile(); got != filepath.Join(work, "AGENTS.md") {
+		t.Fatalf("ProjectMemoryFile() = %q", got)
+	}
+	if got := a.GlobalMemoryFile(); got != filepath.Join(home, ".qoder", "AGENTS.md") {
+		t.Fatalf("GlobalMemoryFile() = %q", got)
+	}
+	wantSkillDirs := []string{
+		filepath.Join(work, ".claude", "skills"),
+		filepath.Join(home, ".claude", "skills"),
+	}
+	if got := a.SkillDirs(); len(got) != len(wantSkillDirs) || got[0] != wantSkillDirs[0] || got[1] != wantSkillDirs[1] {
+		t.Fatalf("SkillDirs() = %#v, want %#v", got, wantSkillDirs)
+	}
+	if modes := a.PermissionModes(); len(modes) != 2 || modes[0].Key != "default" || modes[1].Key != "yolo" {
+		t.Fatalf("PermissionModes() = %#v", modes)
 	}
 }
 
@@ -458,6 +549,132 @@ func TestHandleResult_OldFormatTakesPriority(t *testing.T) {
 	}
 }
 
+func TestQoderSessionSendArgsEnvFilesAndReadLoopFallbacks(t *testing.T) {
+	tmp := t.TempDir()
+	argsPath := filepath.Join(tmp, "args.txt")
+	envPath := filepath.Join(tmp, "env.txt")
+	fakeCLI := filepath.Join(tmp, "qodercli")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$@" > %q
+printf '%%s\n' "$QODER_TEST_ENV:$TURN_ENV" > %q
+printf 'plain line one\n'
+printf 'plain line two\n'
+`, argsPath, envPath)
+	if err := os.WriteFile(fakeCLI, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake cli: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	qs, err := newQoderSession(ctx, fakeCLI, []string{"--profile", "unit"}, tmp, "ultimate", "default", "", []string{
+		"QODER_TEST_ENV=static",
+		"TURN_ENV=session",
+	})
+	if err != nil {
+		t.Fatalf("newQoderSession: %v", err)
+	}
+	defer qs.Close()
+
+	if err := qs.Send("prompt text", nil, []core.FileAttachment{{FileName: "note.txt", Data: []byte("attached")}}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	select {
+	case ev := <-qs.Events():
+		if ev.Type != core.EventResult || ev.Content != "plain line one\nplain line two" || !ev.Done {
+			t.Fatalf("fallback event = %#v", ev)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for fallback result")
+	}
+
+	argsBytes, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsBytes)
+	for _, want := range []string{"--profile", "unit", "-p", "prompt text", "-f", "stream-json", "-q", "-w", tmp, "--model", "ultimate"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("args missing %q:\n%s", want, args)
+		}
+	}
+	if !strings.Contains(args, filepath.Join(tmp, ".cc-connect", "attachments", "note.txt")) {
+		t.Fatalf("args did not include attachment path:\n%s", args)
+	}
+	envBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if strings.TrimSpace(string(envBytes)) != "static:session" {
+		t.Fatalf("merged env = %q, want static:session", strings.TrimSpace(string(envBytes)))
+	}
+}
+
+func TestQoderSessionSendClosedAndProcessError(t *testing.T) {
+	closed := newTestSession()
+	closed.alive.Store(false)
+	if err := closed.Send("prompt", nil, nil); err == nil || !strings.Contains(err.Error(), "session is closed") {
+		t.Fatalf("Send on closed session error = %v", err)
+	}
+	closed.cancel()
+
+	tmp := t.TempDir()
+	fakeCLI := filepath.Join(tmp, "qodercli")
+	if err := os.WriteFile(fakeCLI, []byte("#!/bin/sh\nprintf 'boom\\n' >&2\nexit 7\n"), 0o755); err != nil {
+		t.Fatalf("write fake cli: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	qs, err := newQoderSession(ctx, fakeCLI, nil, tmp, "", "default", "", nil)
+	if err != nil {
+		t.Fatalf("newQoderSession: %v", err)
+	}
+	defer qs.Close()
+	if err := qs.Send("prompt", nil, nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	select {
+	case ev := <-qs.Events():
+		if ev.Type != core.EventError || ev.Error == nil || !strings.Contains(ev.Error.Error(), "boom") {
+			t.Fatalf("error event = %#v", ev)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for error event")
+	}
+}
+
+func TestQoderSessionHelpersAndPermissions(t *testing.T) {
+	qs := newTestSession()
+	defer qs.cancel()
+
+	if !qs.Alive() {
+		t.Fatal("Alive() = false, want true")
+	}
+	if err := qs.RespondPermission("ignored", core.PermissionResult{Behavior: "allow"}); err != nil {
+		t.Fatalf("RespondPermission(): %v", err)
+	}
+	if qs.Events() == nil {
+		t.Fatal("Events() returned nil")
+	}
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{`{"command":"go test ./..."}`, "go test ./..."},
+		{`{"file_path":"/tmp/a.go"}`, "/tmp/a.go"},
+		{`{"pattern":"TODO"}`, "TODO"},
+		{`{"query":"search text"}`, "search text"},
+		{`not-json`, "not-json"},
+	} {
+		if got := extractToolPreview(tc.in); got != tc.want {
+			t.Fatalf("extractToolPreview(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := truncStr("abcdef", 3); got != "abc..." {
+		t.Fatalf("truncStr() = %q, want abc...", got)
+	}
+}
+
 func drainQoderEvents(qs *qoderSession) []core.Event {
 	var events []core.Event
 	for {
@@ -468,4 +685,13 @@ func drainQoderEvents(qs *qoderSession) []core.Event {
 			return events
 		}
 	}
+}
+
+func qoderStringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

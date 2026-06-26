@@ -141,15 +141,28 @@ func (s *scenarioSession) Close() error {
 }
 
 type scenarioPlatform struct {
-	mu    sync.Mutex
-	texts []string
+	mu      sync.Mutex
+	handler core.MessageHandler
+	started bool
+	stopped bool
+	texts   []string
 }
 
 func (p *scenarioPlatform) Name() string { return "scenario" }
-func (p *scenarioPlatform) Start(core.MessageHandler) error {
+func (p *scenarioPlatform) Start(handler core.MessageHandler) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.handler = handler
+	p.started = true
+	p.stopped = false
 	return nil
 }
-func (p *scenarioPlatform) Stop() error { return nil }
+func (p *scenarioPlatform) Stop() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopped = true
+	return nil
+}
 func (p *scenarioPlatform) Reply(_ context.Context, replyCtx any, content string) error {
 	return p.Send(context.Background(), replyCtx, content)
 }
@@ -158,6 +171,18 @@ func (p *scenarioPlatform) Send(_ context.Context, _ any, content string) error 
 	defer p.mu.Unlock()
 	p.texts = append(p.texts, content)
 	return nil
+}
+func (p *scenarioPlatform) emit(t *testing.T, msg *core.Message) {
+	t.Helper()
+	p.mu.Lock()
+	handler := p.handler
+	started := p.started
+	stopped := p.stopped
+	p.mu.Unlock()
+	if handler == nil || !started || stopped {
+		t.Fatalf("platform handler not ready: handler=%v started=%v stopped=%v", handler != nil, started, stopped)
+	}
+	handler(p, msg)
 }
 func (p *scenarioPlatform) clear() {
 	p.mu.Lock()
@@ -210,6 +235,25 @@ func scenarioMessage(content string) *core.Message {
 
 func receive(engine *core.Engine, platform *scenarioPlatform, content string) {
 	engine.ReceiveMessage(platform, scenarioMessage(content))
+}
+
+func TestFakePlatformMessageFlowsThroughEngineToAgentReply(t *testing.T) {
+	engine, agent, platform := newScenarioEngine(t)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine.Start() error = %v", err)
+	}
+
+	platform.emit(t, scenarioMessage("please summarize release state"))
+
+	records := agent.waitRecords(t, 1)
+	if got := records[0].sessionID; got == "" {
+		t.Fatal("agent session id is empty")
+	}
+	if !strings.Contains(records[0].prompt, "please summarize release state") {
+		t.Fatalf("agent prompt = %q, want user content", records[0].prompt)
+	}
+
+	platform.waitTextContaining(t, "scenario response "+records[0].sessionID+" #1")
 }
 
 func TestSessionLifecycleCommandsThroughReceiveMessage(t *testing.T) {
@@ -299,4 +343,5 @@ func TestUnknownSlashCommandNotifiesThenFallsThroughToAgent(t *testing.T) {
 	if !strings.Contains(records[0].prompt, "/not-a-command keep this request") {
 		t.Fatalf("unknown slash command should fall through to agent, got prompt %q", records[0].prompt)
 	}
+	platform.waitTextContaining(t, "scenario response")
 }

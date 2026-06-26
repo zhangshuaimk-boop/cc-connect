@@ -55,7 +55,7 @@ func TestMetaSaveLoad(t *testing.T) {
 		LogMaxBackups: 3,
 		WorkDir:       "/tmp",
 		BinaryPath:    "/usr/local/bin/cc-connect",
-		InstalledAt:  NowISO(),
+		InstalledAt:   NowISO(),
 	}
 
 	if err := SaveMeta(m); err != nil {
@@ -155,6 +155,60 @@ func TestRotatingWriter_FallbackForInvalidMaxBackups(t *testing.T) {
 	defer func() { _ = w.Close() }()
 	if w.MaxBackups() != DefaultLogMaxBackups {
 		t.Fatalf("MaxBackups() = %d, want %d", w.MaxBackups(), DefaultLogMaxBackups)
+	}
+}
+
+func TestRotatingWriterRotateForcesBackup(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "forced.log")
+
+	w, err := NewRotatingWriter(logPath, 1024, 2)
+	if err != nil {
+		t.Fatalf("NewRotatingWriter: %v", err)
+	}
+	if _, err := w.Write([]byte("before rotate")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Rotate(); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	backup, err := os.ReadFile(logPath + ".1")
+	if err != nil {
+		t.Fatalf("ReadFile backup: %v", err)
+	}
+	if string(backup) != "before rotate" {
+		t.Fatalf("backup content = %q, want %q", string(backup), "before rotate")
+	}
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("Stat active log: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("active log size = %d, want 0 after forced rotate", info.Size())
+	}
+}
+
+func TestRotatingWriterRotateWithNilFileReturnsClosed(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "closed.log")
+
+	w, err := NewRotatingWriter(logPath, 1024, 1)
+	if err != nil {
+		t.Fatalf("NewRotatingWriter: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	w.file = nil
+	if err := w.Rotate(); err == nil {
+		t.Fatal("Rotate with nil file returned nil, want error")
+	}
+	if _, err := w.Write([]byte("after close")); err == nil {
+		t.Fatal("Write with nil file returned nil, want error")
 	}
 }
 

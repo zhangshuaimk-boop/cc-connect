@@ -2,7 +2,11 @@ package kimi
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,6 +81,42 @@ func TestAgentFields(t *testing.T) {
 	assert.Equal(t, "kimi-k2", a.GetModel())
 }
 
+func TestAgentNewMissingCLIAndDefaults(t *testing.T) {
+	agentInf, err := New(map[string]any{
+		"cmd":      "definitely-missing-kimi-cli",
+		"work_dir": "",
+	})
+	if err == nil {
+		t.Fatalf("New returned nil error and agent %#v, want missing CLI error", agentInf)
+	}
+	if !strings.Contains(err.Error(), "definitely-missing-kimi-cli") {
+		t.Fatalf("missing CLI error = %v", err)
+	}
+
+	cliPath := filepath.Join(t.TempDir(), "kimi")
+	if err := os.WriteFile(cliPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile fake CLI: %v", err)
+	}
+	agentInf, err = New(map[string]any{
+		"cmd":          cliPath + " --flag",
+		"mode":         "quiet",
+		"timeout_mins": float64(4),
+	})
+	if err != nil {
+		t.Fatalf("New with fake CLI: %v", err)
+	}
+	a := agentInf.(*Agent)
+	if a.workDir != "." || a.mode != "quiet" || a.cmd != cliPath {
+		t.Fatalf("agent defaults = workDir %q mode %q cmd %q", a.workDir, a.mode, a.cmd)
+	}
+	if len(a.cliExtraArgs) != 1 || a.cliExtraArgs[0] != "--flag" {
+		t.Fatalf("cliExtraArgs = %#v, want --flag", a.cliExtraArgs)
+	}
+	if a.timeout != 4*time.Minute {
+		t.Fatalf("timeout = %v, want 4m", a.timeout)
+	}
+}
+
 func TestAgentSetters(t *testing.T) {
 	a := &Agent{workDir: "/tmp", mode: "default", activeIdx: -1}
 
@@ -105,18 +145,26 @@ func TestAgentProviderSwitcher(t *testing.T) {
 	a := &Agent{workDir: "/tmp", activeIdx: -1}
 
 	providers := []core.ProviderConfig{
-		{Name: "moonshot", APIKey: "sk-123"},
+		{Name: "moonshot", APIKey: "sk-123", Model: "kimi-provider", Env: map[string]string{"CUSTOM": "1"}},
 		{Name: "custom", BaseURL: "https://api.example.com"},
 	}
 	a.SetProviders(providers)
 
+	assert.Nil(t, a.GetActiveProvider())
 	assert.False(t, a.SetActiveProvider("missing"))
 	assert.True(t, a.SetActiveProvider("moonshot"))
 	assert.Equal(t, "moonshot", a.GetActiveProvider().Name)
+	assert.Equal(t, "kimi-provider", a.GetModel())
+	env := envSliceToMap(a.providerEnvLocked())
+	assert.Equal(t, "sk-123", env["KIMI_API_KEY"])
+	assert.Equal(t, "1", env["CUSTOM"])
 
 	list := a.ListProviders()
 	require.Len(t, list, 2)
 	assert.Equal(t, "moonshot", list[0].Name)
+
+	assert.True(t, a.SetActiveProvider(""))
+	assert.Nil(t, a.GetActiveProvider())
 }
 
 func TestAgentStartSession(t *testing.T) {
@@ -160,4 +208,154 @@ func TestAgentAvailableModels(t *testing.T) {
 
 	models := a.AvailableModels(context.Background())
 	require.True(t, len(models) > 0)
+}
+
+func TestStartSessionFakeCLI_MergesEnvArgsAndPrompt(t *testing.T) {
+	tmp := t.TempDir()
+	capturePath := filepath.Join(tmp, "capture.txt")
+	cliPath := writeKimiFakeCLI(t, capturePath)
+
+	a := &Agent{
+		workDir:      tmp,
+		model:        "fallback-model",
+		mode:         "plan",
+		cmd:          cliPath,
+		cliExtraArgs: []string{"--wrapped"},
+		configEnv:    []string{"CONFIG_FLAG=from-config"},
+		providers: []core.ProviderConfig{{
+			Name:   "moonshot",
+			APIKey: "provider-key",
+			Model:  "provider-model",
+			Env:    map[string]string{"PROVIDER_FLAG": "from-provider"},
+		}},
+		activeIdx: 0,
+	}
+	a.SetSessionEnv([]string{"SESSION_FLAG=from-session"})
+
+	session, err := a.StartSession(context.Background(), "sid-1")
+	require.NoError(t, err)
+	defer session.Close()
+
+	require.NoError(t, session.Send("hello", nil, nil))
+	events := readKimiEventsUntilResult(t, session.Events())
+	require.True(t, kimiHasEventType(events, core.EventText), "events=%#v", events)
+	require.True(t, kimiHasEventType(events, core.EventResult), "events=%#v", events)
+
+	capture := waitForKimiFileContents(t, capturePath)
+	for _, want := range []string{
+		"args=--wrapped --print --output-format stream-json --plan --resume sid-1 --model provider-model --work-dir " + tmp + " --prompt hello",
+		"KIMI_API_KEY=provider-key",
+		"CONFIG_FLAG=from-config",
+		"PROVIDER_FLAG=from-provider",
+		"SESSION_FLAG=from-session",
+	} {
+		if !strings.Contains(capture, want) {
+			t.Fatalf("capture missing %q:\n%s", want, capture)
+		}
+	}
+}
+
+func TestKimiSessionListingAndDelete(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	base := filepath.Join(home, ".kimi", "sessions", "project-a")
+	sessionDir := filepath.Join(base, "sid-1")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll sessionDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "state.json"), []byte(`{"custom_title":"Custom title"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile state: %v", err)
+	}
+	contextData := strings.Join([]string{
+		`{"role":"user","content":"first user line"}`,
+		`{"role":"assistant","content":"reply"}`,
+		`not-json`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(sessionDir, "context.jsonl"), []byte(contextData), 0o644); err != nil {
+		t.Fatalf("WriteFile context: %v", err)
+	}
+	archivedDir := filepath.Join(base, "archived")
+	if err := os.MkdirAll(archivedDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll archived: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(archivedDir, "state.json"), []byte(`{"custom_title":"Archived","archived":true}`), 0o644); err != nil {
+		t.Fatalf("WriteFile archived state: %v", err)
+	}
+
+	a := &Agent{workDir: t.TempDir()}
+	sessions, err := a.ListSessions(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	assert.Equal(t, "sid-1", sessions[0].ID)
+	assert.Equal(t, "first user line", sessions[0].Summary)
+	assert.Equal(t, 2, sessions[0].MessageCount)
+
+	assert.Equal(t, sessionDir, findKimiSessionDir("sid-1"))
+	require.NoError(t, a.DeleteSession(context.Background(), "sid-1"))
+	_, err = os.Stat(sessionDir)
+	assert.True(t, os.IsNotExist(err), "session dir should be removed: %v", err)
+	assert.Error(t, a.DeleteSession(context.Background(), "missing"))
+}
+
+func writeKimiFakeCLI(t *testing.T, capturePath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "kimi")
+	script := fmt.Sprintf(`#!/bin/sh
+{
+  printf 'args=%%s\n' "$*"
+  printf 'KIMI_API_KEY=%%s\n' "$KIMI_API_KEY"
+  printf 'CONFIG_FLAG=%%s\n' "$CONFIG_FLAG"
+  printf 'PROVIDER_FLAG=%%s\n' "$PROVIDER_FLAG"
+  printf 'SESSION_FLAG=%%s\n' "$SESSION_FLAG"
+} > %q
+printf '{"role":"assistant","content":[{"type":"text","text":"done"}]}\n'
+printf 'To resume this session: kimi -r sid-2\n' >&2
+`, capturePath)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile fake CLI: %v", err)
+	}
+	return path
+}
+
+func readKimiEventsUntilResult(t *testing.T, ch <-chan core.Event) []core.Event {
+	t.Helper()
+	var events []core.Event
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-ch:
+			events = append(events, evt)
+			if evt.Type == core.EventResult {
+				return events
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for result, events=%#v", events)
+		}
+	}
+}
+
+func kimiHasEventType(events []core.Event, typ core.EventType) bool {
+	for _, evt := range events {
+		if evt.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForKimiFileContents(t *testing.T, path string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return string(data)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	return string(data)
 }

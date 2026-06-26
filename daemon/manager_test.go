@@ -258,3 +258,37 @@ access_token = "${UNSET_PLACEHOLDER_THAT_DOES_NOT_EXIST}"
 		t.Errorf("unset placeholder must not appear in EnvExtra; EnvExtra=%+v", cfg.EnvExtra)
 	}
 }
+
+func TestRemoveMetaDeletesDaemonMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	m := &Meta{
+		LogFile:       "/tmp/test.log",
+		LogMaxSize:    1024,
+		LogMaxBackups: 2,
+		WorkDir:       "/tmp",
+		BinaryPath:    "/usr/local/bin/cc-connect",
+		InstalledAt:   NowISO(),
+	}
+	if err := SaveMeta(m); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+	RemoveMeta()
+	if _, err := LoadMeta(); !os.IsNotExist(err) {
+		t.Fatalf("LoadMeta after RemoveMeta error = %v, want not exist", err)
+	}
+}
+
+func TestLoadMetaRejectsInvalidJSON(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if err := os.MkdirAll(filepath.Dir(metaPath()), 0o755); err != nil {
+		t.Fatalf("mkdir meta dir: %v", err)
+	}
+	if err := os.WriteFile(metaPath(), []byte("{"), 0o600); err != nil {
+		t.Fatalf("write bad meta: %v", err)
+	}
+	if _, err := LoadMeta(); err == nil {
+		t.Fatal("LoadMeta returned nil error for invalid JSON")
+	}
+}

@@ -687,6 +687,46 @@ func TestCronScheduler_AddJob_NormalizesSessionMode(t *testing.T) {
 	}
 }
 
+func TestCronScheduler_DisableJob_RemovesScheduledEntry(t *testing.T) {
+	store, err := NewCronStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := NewCronScheduler(store)
+	job := &CronJob{
+		ID:         "disable-entry",
+		Project:    "p",
+		SessionKey: "feishu:C123:U456",
+		CronExpr:   "0 6 * * *",
+		Prompt:     "daily",
+		Enabled:    true,
+		CreatedAt:  time.Now(),
+	}
+	if err := cs.AddJob(job); err != nil {
+		t.Fatalf("AddJob() error = %v", err)
+	}
+	cs.mu.RLock()
+	_, scheduled := cs.entries[job.ID]
+	cs.mu.RUnlock()
+	if !scheduled {
+		t.Fatal("job was not registered before DisableJob")
+	}
+
+	if err := cs.DisableJob(job.ID); err != nil {
+		t.Fatalf("DisableJob() error = %v", err)
+	}
+
+	cs.mu.RLock()
+	_, scheduled = cs.entries[job.ID]
+	cs.mu.RUnlock()
+	if scheduled {
+		t.Fatal("job remained registered after DisableJob")
+	}
+	if stored := store.Get(job.ID); stored == nil || stored.Enabled {
+		t.Fatalf("stored job = %#v, want disabled", stored)
+	}
+}
+
 func TestCronScheduler_UsesNewSession_GlobalDefault(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewCronStore(dir)

@@ -1,8 +1,11 @@
 package core
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestWorkspaceBindingManager_SaveLoad(t *testing.T) {
@@ -147,5 +150,95 @@ func TestWorkspaceBindingManager_UnbindScopedRemovesLegacyBinding(t *testing.T) 
 	}
 	if b := mgr.Lookup("project:claude", "C1"); b != nil {
 		t.Fatalf("expected legacy binding to be removed, got %+v", b)
+	}
+}
+
+func TestFlexTimeUnmarshalJSONVariants(t *testing.T) {
+	var withZone FlexTime
+	if err := json.Unmarshal([]byte(`"2026-06-26T10:11:12Z"`), &withZone); err != nil {
+		t.Fatal(err)
+	}
+	if withZone.IsZero() {
+		t.Fatal("expected RFC3339 timestamp to parse")
+	}
+
+	var local FlexTime
+	if err := json.Unmarshal([]byte(`"2026-06-26 10:11:12"`), &local); err != nil {
+		t.Fatal(err)
+	}
+	wantLocal := time.Date(2026, 6, 26, 10, 11, 12, 0, time.Local)
+	if !local.Equal(wantLocal) {
+		t.Fatalf("local timestamp = %v, want %v", local.Time, wantLocal)
+	}
+
+	for _, raw := range []string{`""`, `"not-a-time"`, `123`} {
+		t.Run(raw, func(t *testing.T) {
+			var ft FlexTime
+			if err := json.Unmarshal([]byte(raw), &ft); err != nil {
+				t.Fatal(err)
+			}
+			if !ft.IsZero() {
+				t.Fatalf("expected %s to decode as zero time, got %v", raw, ft.Time)
+			}
+		})
+	}
+}
+
+func TestWorkspaceBindingManager_CorruptFileCanBeRecoveredByNewBinding(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "bindings.json")
+	if err := os.WriteFile(storePath, []byte("{not-json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewWorkspaceBindingManager(storePath)
+	channelKey := workspaceChannelKey("feishu", "C1")
+	if got := mgr.Lookup("project:claude", channelKey); got != nil {
+		t.Fatalf("expected corrupt store to load no binding, got %+v", got)
+	}
+
+	mgr.Bind("project:claude", channelKey, "chan", "/workspace")
+
+	reloaded := NewWorkspaceBindingManager(storePath)
+	if got := reloaded.Lookup("project:claude", channelKey); got == nil || got.Workspace != "/workspace" || got.ChannelName != "chan" {
+		t.Fatalf("expected recovered binding after save, got %+v", got)
+	}
+}
+
+func TestWorkspaceBindingManager_RefreshFileDeletionResetsBindings(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "bindings.json")
+	channelKey := workspaceChannelKey("feishu", "C1")
+
+	mgr := NewWorkspaceBindingManager(storePath)
+	mgr.Bind("project:claude", channelKey, "chan", "/workspace")
+	if got := mgr.Lookup("project:claude", channelKey); got == nil {
+		t.Fatal("expected binding before deleting store")
+	}
+
+	if err := os.Remove(storePath); err != nil {
+		t.Fatal(err)
+	}
+	if got := mgr.Lookup("project:claude", channelKey); got != nil {
+		t.Fatalf("expected bindings to reset after store deletion, got %+v", got)
+	}
+	if list := mgr.ListByProject("project:claude"); len(list) != 0 {
+		t.Fatalf("expected empty project list after store deletion, got %+v", list)
+	}
+}
+
+func TestWorkspaceBindingManager_EmptyStoreAndEmptyChannelKey(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "bindings.json")
+	if err := os.WriteFile(storePath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewWorkspaceBindingManager(storePath)
+	if got := mgr.Lookup("project:claude", ""); got != nil {
+		t.Fatalf("expected empty channel lookup to miss, got %+v", got)
+	}
+	if got := workspaceChannelKeyCandidates(""); got != nil {
+		t.Fatalf("workspaceChannelKeyCandidates(\"\") = %#v, want nil", got)
 	}
 }

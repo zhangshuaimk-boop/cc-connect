@@ -1,12 +1,17 @@
 package config_scenario
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/chenhg5/cc-connect/config"
+	"github.com/chenhg5/cc-connect/core"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -35,6 +40,327 @@ type = "feishu"
 app_id = "cli_release"
 app_secret = "secret"
 `
+}
+
+type configAgent struct {
+	mu             sync.Mutex
+	name           string
+	opts           map[string]any
+	providers      []core.ProviderConfig
+	activeProvider string
+	sessions       []*configSession
+	records        []string
+}
+
+func newConfigAgent(name string, opts map[string]any) *configAgent {
+	copied := make(map[string]any, len(opts))
+	for k, v := range opts {
+		copied[k] = v
+	}
+	return &configAgent{name: name, opts: copied}
+}
+
+func (a *configAgent) Name() string { return a.name }
+
+func (a *configAgent) StartSession(_ context.Context, sessionID string) (core.AgentSession, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if sessionID == "" {
+		sessionID = "config-session"
+	}
+	session := &configSession{agent: a, id: sessionID, alive: true, events: make(chan core.Event, 8)}
+	a.sessions = append(a.sessions, session)
+	return session, nil
+}
+
+func (a *configAgent) ListSessions(context.Context) ([]core.AgentSessionInfo, error) {
+	return nil, nil
+}
+
+func (a *configAgent) Stop() error {
+	a.mu.Lock()
+	sessions := append([]*configSession(nil), a.sessions...)
+	a.mu.Unlock()
+	for _, session := range sessions {
+		_ = session.Close()
+	}
+	return nil
+}
+
+func (a *configAgent) SetProviders(providers []core.ProviderConfig) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.providers = append([]core.ProviderConfig(nil), providers...)
+}
+
+func (a *configAgent) SetActiveProvider(name string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, provider := range a.providers {
+		if provider.Name == name {
+			a.activeProvider = name
+			return true
+		}
+	}
+	return false
+}
+
+func (a *configAgent) GetActiveProvider() *core.ProviderConfig {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, provider := range a.providers {
+		if provider.Name == a.activeProvider {
+			cp := provider
+			return &cp
+		}
+	}
+	return nil
+}
+
+func (a *configAgent) ListProviders() []core.ProviderConfig {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]core.ProviderConfig(nil), a.providers...)
+}
+
+func (a *configAgent) record(prompt string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.records = append(a.records, prompt)
+}
+
+func (a *configAgent) waitRecord(t *testing.T) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		a.mu.Lock()
+		if len(a.records) > 0 {
+			prompt := a.records[0]
+			a.mu.Unlock()
+			return prompt
+		}
+		a.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t.Fatalf("timeout waiting for agent prompt, got %#v", a.records)
+	return ""
+}
+
+type configSession struct {
+	mu     sync.Mutex
+	agent  *configAgent
+	id     string
+	alive  bool
+	events chan core.Event
+}
+
+func (s *configSession) Send(prompt string, _ []core.ImageAttachment, _ []core.FileAttachment) error {
+	s.agent.record(prompt)
+	s.events <- core.Event{Type: core.EventResult, Content: "config ok", Done: true}
+	return nil
+}
+
+func (s *configSession) RespondPermission(string, core.PermissionResult) error { return nil }
+func (s *configSession) Events() <-chan core.Event                             { return s.events }
+func (s *configSession) CurrentSessionID() string                              { return s.id }
+func (s *configSession) Alive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.alive
+}
+func (s *configSession) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.alive {
+		return nil
+	}
+	s.alive = false
+	close(s.events)
+	return nil
+}
+
+type configPlatform struct {
+	mu      sync.Mutex
+	name    string
+	opts    map[string]any
+	texts   []string
+	images  []core.ImageAttachment
+	files   []core.FileAttachment
+	handler core.MessageHandler
+	started bool
+}
+
+func newConfigPlatform(name string, opts map[string]any) *configPlatform {
+	copied := make(map[string]any, len(opts))
+	for k, v := range opts {
+		copied[k] = v
+	}
+	return &configPlatform{name: name, opts: copied}
+}
+
+func (p *configPlatform) Name() string { return p.name }
+func (p *configPlatform) Start(handler core.MessageHandler) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.handler = handler
+	p.started = true
+	return nil
+}
+func (p *configPlatform) Stop() error { return nil }
+func (p *configPlatform) Reply(_ context.Context, replyCtx any, content string) error {
+	return p.Send(context.Background(), replyCtx, content)
+}
+func (p *configPlatform) Send(_ context.Context, _ any, content string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.texts = append(p.texts, content)
+	return nil
+}
+func (p *configPlatform) SendImage(_ context.Context, _ any, img core.ImageAttachment) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.images = append(p.images, img)
+	return nil
+}
+func (p *configPlatform) SendFile(_ context.Context, _ any, file core.FileAttachment) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.files = append(p.files, file)
+	return nil
+}
+func (p *configPlatform) emit(t *testing.T, msg *core.Message) {
+	t.Helper()
+	p.mu.Lock()
+	handler := p.handler
+	started := p.started
+	p.mu.Unlock()
+	if handler == nil || !started {
+		t.Fatalf("platform handler not ready: handler=%v started=%v", handler != nil, started)
+	}
+	handler(p, msg)
+}
+func (p *configPlatform) waitText(t *testing.T, substr string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		p.mu.Lock()
+		texts := append([]string(nil), p.texts...)
+		p.mu.Unlock()
+		for _, text := range texts {
+			if strings.Contains(text, substr) {
+				return text
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	t.Fatalf("timeout waiting for platform text containing %q, got %#v", substr, p.texts)
+	return ""
+}
+
+type releaseLocalRuntime struct {
+	cfg       *config.Config
+	proj      *config.ProjectConfig
+	agent     *configAgent
+	platforms []*configPlatform
+	engine    *core.Engine
+}
+
+func newReleaseLocalRuntime(t *testing.T, body string) *releaseLocalRuntime {
+	t.Helper()
+	cfg, err := config.Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(cfg.Projects))
+	}
+	proj := &cfg.Projects[0]
+	agentOpts := map[string]any{}
+	for k, v := range proj.Agent.Options {
+		agentOpts[k] = v
+	}
+	agentOpts["cc_data_dir"] = cfg.DataDir
+	agentOpts["cc_project"] = proj.Name
+	agent := newConfigAgent(proj.Agent.Type, agentOpts)
+	agent.SetProviders(configProvidersToCore(proj.Agent.Providers))
+	if provider, _ := proj.Agent.Options["provider"].(string); provider != "" {
+		if !agent.SetActiveProvider(provider) {
+			t.Fatalf("configured provider %q was not available in %#v", provider, agent.providers)
+		}
+	}
+
+	var platforms []*configPlatform
+	var corePlatforms []core.Platform
+	for _, pc := range proj.Platforms {
+		opts := make(map[string]any, len(pc.Options)+2)
+		for k, v := range pc.Options {
+			opts[k] = v
+		}
+		opts["cc_data_dir"] = cfg.DataDir
+		opts["cc_project"] = proj.Name
+		platform := newConfigPlatform(pc.Type, opts)
+		platforms = append(platforms, platform)
+		corePlatforms = append(corePlatforms, platform)
+	}
+	engine := core.NewEngine(proj.Name, agent, corePlatforms, filepath.Join(t.TempDir(), "sessions.json"), core.LangEnglish)
+	mode, tm, tool, thinkingMax, toolMax, showCtx, showFooter := config.EffectiveDisplay(cfg, proj)
+	historyMax := config.EffectiveHistoryMaxLen(cfg, proj)
+	engine.SetDisplayConfig(core.DisplayCfg{
+		Mode:             mode,
+		CardMode:         config.EffectiveCardMode(cfg, proj),
+		ThinkingMessages: tm,
+		ThinkingMaxLen:   thinkingMax,
+		ToolMessages:     tool,
+		ToolMaxLen:       toolMax,
+		HistoryMaxLen:    &historyMax,
+	})
+	engine.SetShowContextIndicator(showCtx)
+	engine.SetReplyFooterEnabled(showFooter)
+	engine.SetAttachmentSendEnabled(cfg.AttachmentSend != "off")
+	engine.SetInjectSender(proj.InjectSender != nil && *proj.InjectSender)
+	t.Cleanup(func() {
+		engine.Stop()
+		_ = agent.Stop()
+	})
+	return &releaseLocalRuntime{cfg: cfg, proj: proj, agent: agent, platforms: platforms, engine: engine}
+}
+
+func configProvidersToCore(providers []config.ProviderConfig) []core.ProviderConfig {
+	out := make([]core.ProviderConfig, len(providers))
+	for i, provider := range providers {
+		out[i] = core.ProviderConfig{
+			Name:     provider.Name,
+			APIKey:   provider.APIKey,
+			BaseURL:  provider.BaseURL,
+			Model:    provider.Model,
+			Thinking: provider.Thinking,
+			Env:      provider.Env,
+		}
+		for _, model := range provider.Models {
+			out[i].Models = append(out[i].Models, core.ModelOption{Name: model.Model, Alias: model.Alias})
+		}
+		if provider.Codex != nil {
+			out[i].CodexWireAPI = provider.Codex.WireAPI
+			out[i].CodexHTTPHeaders = provider.Codex.HTTPHeaders
+		}
+	}
+	return out
+}
+
+func configScenarioMessage(content string) *core.Message {
+	return &core.Message{
+		SessionKey: "fake:chat-1:user-1",
+		Platform:   "fake",
+		UserID:     "user-1",
+		UserName:   "Release User",
+		ChatName:   "Release Chat",
+		Content:    content,
+		ReplyCtx:   "reply-ctx",
+	}
 }
 
 func TestReleaseConfig_ProjectDisplayOverridesGlobalFromLoadedConfig(t *testing.T) {
@@ -99,6 +425,137 @@ app_secret = "secret"
 	}
 	if got := config.EffectiveCardMode(cfg, proj); got != "legacy" {
 		t.Fatalf("card mode = %q, want project legacy override", got)
+	}
+}
+
+func TestReleaseConfig_InitializesFakeAgentAndPlatformsFromLoadedConfig(t *testing.T) {
+	dataDir := filepath.ToSlash(t.TempDir())
+	workDir := filepath.ToSlash(t.TempDir())
+	runtime := newReleaseLocalRuntime(t, `
+data_dir = "`+dataDir+`"
+
+[[providers]]
+name = "global-shared"
+api_key = "sk-shared"
+base_url = "https://shared.example.test"
+model = "shared-model"
+agent_types = ["fake-agent"]
+
+[[projects]]
+name = "release"
+reset_on_idle_mins = 0
+
+[projects.agent]
+type = "fake-agent"
+
+[projects.agent.options]
+work_dir = "`+workDir+`"
+provider = "project-primary"
+mode = "bypassPermissions"
+
+[[projects.agent.providers]]
+name = "project-primary"
+api_key = "sk-project"
+base_url = "https://project.example.test"
+model = "project-model"
+thinking = "enabled"
+[projects.agent.providers.env]
+HTTPS_PROXY = "http://127.0.0.1:7890"
+
+[[projects.platforms]]
+type = "fake"
+[projects.platforms.options]
+app_id = "fake-app"
+app_secret = "fake-secret"
+
+[[projects.platforms]]
+type = "audit"
+[projects.platforms.options]
+token = "audit-token"
+`)
+
+	if runtime.cfg.DataDir != dataDir {
+		t.Fatalf("DataDir = %q, want %q", runtime.cfg.DataDir, dataDir)
+	}
+	if got := runtime.agent.opts["cc_data_dir"]; got != dataDir {
+		t.Fatalf("agent cc_data_dir = %#v, want %q", got, dataDir)
+	}
+	if got := runtime.agent.opts["cc_project"]; got != "release" {
+		t.Fatalf("agent cc_project = %#v, want release", got)
+	}
+	if got := runtime.agent.opts["work_dir"]; got != workDir {
+		t.Fatalf("agent work_dir = %#v, want %q", got, workDir)
+	}
+	if got := runtime.agent.opts["mode"]; got != "bypassPermissions" {
+		t.Fatalf("agent mode option = %#v, want bypassPermissions", got)
+	}
+	active := runtime.agent.GetActiveProvider()
+	if active == nil || active.Name != "project-primary" || active.Model != "project-model" || active.Env["HTTPS_PROXY"] == "" {
+		t.Fatalf("active provider = %#v, want project-primary with model/env", active)
+	}
+	if len(runtime.platforms) != 2 {
+		t.Fatalf("platform count = %d, want 2", len(runtime.platforms))
+	}
+	first := runtime.platforms[0]
+	if first.Name() != "fake" || first.opts["cc_data_dir"] != dataDir || first.opts["cc_project"] != "release" || first.opts["app_id"] != "fake-app" {
+		t.Fatalf("first platform = name:%s opts:%#v", first.Name(), first.opts)
+	}
+	second := runtime.platforms[1]
+	if second.Name() != "audit" || second.opts["token"] != "audit-token" || second.opts["cc_project"] != "release" {
+		t.Fatalf("second platform = name:%s opts:%#v", second.Name(), second.opts)
+	}
+}
+
+func TestReleaseConfig_EngineUsesConfigSwitchesWithFakeRuntime(t *testing.T) {
+	dataDir := filepath.ToSlash(t.TempDir())
+	workDir := filepath.ToSlash(t.TempDir())
+	runtime := newReleaseLocalRuntime(t, `
+data_dir = "`+dataDir+`"
+attachment_send = "off"
+
+[[projects]]
+name = "release"
+inject_sender = true
+reset_on_idle_mins = 0
+
+[projects.agent]
+type = "fake-agent"
+
+[projects.agent.options]
+work_dir = "`+workDir+`"
+
+[[projects.platforms]]
+type = "fake"
+[projects.platforms.options]
+app_id = "fake-app"
+app_secret = "fake-secret"
+`)
+
+	if err := runtime.engine.Start(); err != nil {
+		t.Fatalf("engine.Start() error = %v", err)
+	}
+	platform := runtime.platforms[0]
+	platform.emit(t, configScenarioMessage("check initialized config"))
+
+	prompt := runtime.agent.waitRecord(t)
+	if !strings.Contains(prompt, `[cc-connect sender_id=user-1 sender_name="Release User" platform=fake chat_id=chat-1]`) {
+		t.Fatalf("prompt = %q, want injected sender header", prompt)
+	}
+	if !strings.Contains(prompt, "check initialized config") {
+		t.Fatalf("prompt = %q, want message content", prompt)
+	}
+	platform.waitText(t, "config ok")
+
+	err := runtime.engine.SendToSessionWithAttachments(
+		"fake:chat-1:user-1",
+		"generated attachment",
+		[]core.ImageAttachment{{FileName: "image.png", MimeType: "image/png", Data: []byte("png")}},
+		nil,
+		nil,
+		false,
+	)
+	if !errors.Is(err, core.ErrAttachmentSendDisabled) {
+		t.Fatalf("SendToSessionWithAttachments() error = %v, want ErrAttachmentSendDisabled", err)
 	}
 }
 

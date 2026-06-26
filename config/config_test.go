@@ -481,6 +481,48 @@ func TestEffectiveHistoryMaxLen(t *testing.T) {
 	}
 }
 
+func TestEffectiveShell(t *testing.T) {
+	cfg := &Config{Shell: "/bin/zsh", ShellProfile: "source ~/.zshrc"}
+	proj := &ProjectConfig{}
+
+	shell, flag, profile := EffectiveShell(cfg, proj)
+	if shell != "/bin/zsh" || flag != "-c" || profile != "source ~/.zshrc" {
+		t.Fatalf("EffectiveShell(global) = (%q, %q, %q)", shell, flag, profile)
+	}
+
+	proj.Shell = "pwsh"
+	proj.ShellProfile = "$PROFILE"
+	shell, flag, profile = EffectiveShell(cfg, proj)
+	if shell != "pwsh" || flag != "-Command" || profile != "$PROFILE" {
+		t.Fatalf("EffectiveShell(project pwsh) = (%q, %q, %q)", shell, flag, profile)
+	}
+
+	proj.Shell = "cmd.exe"
+	shell, flag, _ = EffectiveShell(cfg, proj)
+	if flag != "/C" {
+		t.Fatalf("EffectiveShell(cmd.exe) flag = %q, want /C", flag)
+	}
+}
+
+func TestEffectiveCardMode(t *testing.T) {
+	rich := " rich "
+	legacy := "legacy"
+	invalid := "modern"
+
+	if got := EffectiveCardMode(&Config{}, nil); got != "legacy" {
+		t.Fatalf("default card mode = %q, want legacy", got)
+	}
+	if got := EffectiveCardMode(&Config{Display: DisplayConfig{CardMode: &rich}}, nil); got != "rich" {
+		t.Fatalf("global card mode = %q, want rich", got)
+	}
+	if got := EffectiveCardMode(&Config{Display: DisplayConfig{CardMode: &rich}}, &ProjectConfig{Display: &DisplayConfig{CardMode: &legacy}}); got != "legacy" {
+		t.Fatalf("project card mode = %q, want legacy", got)
+	}
+	if got := EffectiveCardMode(&Config{Display: DisplayConfig{CardMode: &invalid}}, &ProjectConfig{Display: &DisplayConfig{CardMode: &invalid}}); got != "legacy" {
+		t.Fatalf("invalid card mode = %q, want legacy", got)
+	}
+}
+
 func TestValidateProjectDisplayConfig(t *testing.T) {
 	mode := "verbose"
 	cardMode := "modern"
@@ -659,6 +701,106 @@ func TestLoad_MissingEnvPlaceholderBecomesEmptyString(t *testing.T) {
 	}
 	if _, ok := cfg.Projects[0].Agent.Options["retries"].(int64); !ok {
 		t.Fatalf("retries type = %T, want int64", cfg.Projects[0].Agent.Options["retries"])
+	}
+}
+
+func TestLoadPermissive_AllowsMissingPlatforms(t *testing.T) {
+	configPath := writeConfigFixture(t, `
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "/tmp/demo"
+`)
+
+	if _, err := Load(configPath); err == nil {
+		t.Fatal("Load() succeeded without platforms, want validation error")
+	}
+
+	cfg, err := LoadPermissive(configPath)
+	if err != nil {
+		t.Fatalf("LoadPermissive() error: %v", err)
+	}
+	if len(cfg.Projects) != 1 || cfg.Projects[0].Name != "demo" {
+		t.Fatalf("projects = %#v, want demo project", cfg.Projects)
+	}
+}
+
+func TestLoad_InvalidTOMLAndTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "invalid syntax",
+			body: "[[projects]\nname = \"demo\"\n",
+			want: "parse config",
+		},
+		{
+			name: "invalid bool type",
+			body: `
+quiet = "yes"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[[projects.platforms]]
+type = "feishu"
+`,
+			want: "parse config",
+		},
+		{
+			name: "invalid nested int type",
+			body: `
+[rate_limit]
+max_messages = "many"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[[projects.platforms]]
+type = "feishu"
+`,
+			want: "parse config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(writeConfigFixture(t, tt.body))
+			assertErrContains(t, err, tt.want)
+		})
+	}
+}
+
+func TestExpandUserPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "~", want: home},
+		{in: "~/state/config.json", want: filepath.Join(home, "state", "config.json")},
+		{in: "~other/state", want: "~other/state"},
+		{in: "/tmp/state", want: "/tmp/state"},
+		{in: "", want: ""},
+	}
+	for _, tt := range tests {
+		if got := expandUserPath(tt.in); got != tt.want {
+			t.Fatalf("expandUserPath(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
 
@@ -1085,6 +1227,37 @@ func TestLoadMiniMaxLocalConfig_MissingFileReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadMiniMaxLocalConfig_ExpandsUserPathAndRedactsParseError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgDir := filepath.Join(home, "private")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "minimax.json"), []byte(`{"api_key":"sk-home","base_url":"https://api.example.com"}`), 0o600); err != nil {
+		t.Fatalf("write minimax config: %v", err)
+	}
+
+	cfg, err := LoadMiniMaxLocalConfig("/unused", "~/private/minimax.json")
+	if err != nil {
+		t.Fatalf("LoadMiniMaxLocalConfig() error: %v", err)
+	}
+	if cfg.APIKey != "sk-home" || cfg.BaseURL != "https://api.example.com" {
+		t.Fatalf("config = %#v, want expanded file contents", cfg)
+	}
+
+	badPath := filepath.Join(cfgDir, "bad.json")
+	secretPayload := `{"api_key":"sk-should-not-appear",`
+	if err := os.WriteFile(badPath, []byte(secretPayload), 0o600); err != nil {
+		t.Fatalf("write bad minimax config: %v", err)
+	}
+	_, err = LoadMiniMaxLocalConfig("/unused", badPath)
+	assertErrContains(t, err, "parse minimax config")
+	if strings.Contains(err.Error(), "sk-should-not-appear") {
+		t.Fatalf("parse error leaked secret payload: %v", err)
+	}
+}
+
 const multiProjectConfigTOML = `# multi-project config
 [[projects]]
 name = "alpha"
@@ -1194,6 +1367,45 @@ func TestSaveProviderModel_GlobalProviderRef(t *testing.T) {
 	cfg := readTestConfig(t)
 	if cfg.Providers[0].Model != "gpt-5" {
 		t.Fatalf("global provider model = %q, want gpt-5", cfg.Providers[0].Model)
+	}
+}
+
+func TestGlobalProviderCRUD(t *testing.T) {
+	writeTestConfig(t, globalProviderRefConfigTOML)
+
+	initial, err := ListGlobalProviders()
+	if err != nil {
+		t.Fatalf("ListGlobalProviders() error: %v", err)
+	}
+	if len(initial) != 1 || initial[0].Name != "shared-openai" {
+		t.Fatalf("initial providers = %#v", initial)
+	}
+
+	provider := ProviderConfig{Name: "shared-codex", APIKey: "sk-codex", BaseURL: "https://codex.example.com", AgentTypes: []string{"codex"}}
+	if err := AddGlobalProvider(provider); err != nil {
+		t.Fatalf("AddGlobalProvider() error: %v", err)
+	}
+	if err := AddGlobalProvider(provider); err == nil {
+		t.Fatal("AddGlobalProvider() duplicate provider: expected error")
+	}
+
+	updated := ProviderConfig{APIKey: "sk-updated", Model: "gpt-5.4", AgentTypes: []string{"codex"}}
+	if err := UpdateGlobalProvider("shared-codex", updated); err != nil {
+		t.Fatalf("UpdateGlobalProvider() error: %v", err)
+	}
+	if err := UpdateGlobalProvider("missing", updated); err == nil {
+		t.Fatal("UpdateGlobalProvider() missing provider: expected error")
+	}
+
+	providers, err := ListGlobalProviders()
+	if err != nil {
+		t.Fatalf("ListGlobalProviders() after update error: %v", err)
+	}
+	if len(providers) != 2 {
+		t.Fatalf("provider count = %d, want 2", len(providers))
+	}
+	if providers[1].Name != "shared-codex" || providers[1].APIKey != "sk-updated" || providers[1].Model != "gpt-5.4" {
+		t.Fatalf("updated provider = %#v", providers[1])
 	}
 }
 
@@ -2551,6 +2763,64 @@ func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 	}
 }
 
+func TestSaveProjectSettings_AgentTypeFiltersProviderRefs(t *testing.T) {
+	configPath := writeConfigFixture(t, `
+[[providers]]
+name = "claude-only"
+api_key = "sk-claude"
+agent_types = ["claudecode"]
+
+[[providers]]
+name = "codex-only"
+api_key = "sk-codex"
+agent_types = ["codex"]
+
+[[projects]]
+name = "alpha"
+
+[projects.agent]
+type = "claudecode"
+provider_refs = ["claude-only", "codex-only"]
+
+[projects.agent.options]
+provider = "claude-only"
+mode = "default"
+
+[[projects.platforms]]
+type = "feishu"
+`)
+	patchConfigPath(t, configPath)
+
+	agentType := "codex"
+	emptyMode := " "
+	emptyWorkDir := ""
+	if err := SaveProjectSettings("alpha", ProjectSettingsUpdate{
+		AgentType: &agentType,
+		Mode:      &emptyMode,
+		WorkDir:   &emptyWorkDir,
+	}); err != nil {
+		t.Fatalf("SaveProjectSettings() error: %v", err)
+	}
+
+	cfg := readConfigFixture(t, configPath)
+	proj := cfg.Projects[0]
+	if proj.Agent.Type != "codex" {
+		t.Fatalf("agent type = %q, want codex", proj.Agent.Type)
+	}
+	if len(proj.Agent.ProviderRefs) != 1 || proj.Agent.ProviderRefs[0] != "codex-only" {
+		t.Fatalf("provider refs = %#v, want [codex-only]", proj.Agent.ProviderRefs)
+	}
+	if _, ok := proj.Agent.Options["provider"]; ok {
+		t.Fatalf("incompatible active provider was not cleared: %#v", proj.Agent.Options)
+	}
+	if _, ok := proj.Agent.Options["mode"]; ok {
+		t.Fatalf("empty mode was not removed: %#v", proj.Agent.Options)
+	}
+	if _, ok := proj.Agent.Options["work_dir"]; ok {
+		t.Fatalf("empty work_dir was not removed: %#v", proj.Agent.Options)
+	}
+}
+
 func TestGetProjectConfigDetails(t *testing.T) {
 	configPath := writeConfigFixture(t, feishuConfigFixture)
 	patchConfigPath(t, configPath)
@@ -3222,5 +3492,114 @@ func TestRemoveGlobalProvider_CleansUpProviderRefs(t *testing.T) {
 	refs2 := cfg.Projects[1].Agent.ProviderRefs
 	if len(refs2) != 0 {
 		t.Errorf("proj2 provider_refs: want [], got %v", refs2)
+	}
+}
+
+func TestProviderRefsAndProjectRemoval(t *testing.T) {
+	writeTestConfig(t, multiProjectConfigTOML)
+
+	if err := SaveProviderRefs("alpha", []string{"shared-a", "shared-b"}); err != nil {
+		t.Fatalf("SaveProviderRefs() error: %v", err)
+	}
+	if err := SaveProviderRefs("missing", []string{"shared-a"}); err == nil {
+		t.Fatal("SaveProviderRefs() missing project: expected error")
+	}
+
+	cfg := readTestConfig(t)
+	if refs := cfg.Projects[0].Agent.ProviderRefs; len(refs) != 2 || refs[0] != "shared-a" || refs[1] != "shared-b" {
+		t.Fatalf("provider_refs = %#v, want [shared-a shared-b]", refs)
+	}
+
+	if err := RemoveProject("beta"); err != nil {
+		t.Fatalf("RemoveProject() error: %v", err)
+	}
+	if err := RemoveProject("missing"); err == nil {
+		t.Fatal("RemoveProject() missing project: expected error")
+	}
+
+	cfg = readTestConfig(t)
+	if len(cfg.Projects) != 1 || cfg.Projects[0].Name != "alpha" {
+		t.Fatalf("projects after remove = %#v, want only alpha", cfg.Projects)
+	}
+}
+
+func TestGlobalSettingsAndWebAdmin(t *testing.T) {
+	writeTestConfig(t, baseConfigTOML)
+
+	settings := GetGlobalSettings()
+	if settings["idle_timeout_mins"] != 120 || settings["thinking_messages"] != true || settings["queue_max_depth"] != 5 {
+		t.Fatalf("default global settings = %#v", settings)
+	}
+
+	language := "zh"
+	attachment := "off"
+	logLevel := "debug"
+	idle := 42
+	thinking := false
+	thinkingLen := 123
+	toolMessages := false
+	toolLen := 456
+	stream := false
+	streamInterval := 2500
+	rateMax := 7
+	rateWindow := 30
+	queueDepth := 9
+	if err := SaveGlobalSettings(GlobalSettingsUpdate{
+		Language:           &language,
+		AttachmentSend:     &attachment,
+		LogLevel:           &logLevel,
+		IdleTimeoutMins:    &idle,
+		ThinkingMessages:   &thinking,
+		ThinkingMaxLen:     &thinkingLen,
+		ToolMessages:       &toolMessages,
+		ToolMaxLen:         &toolLen,
+		StreamPreviewOn:    &stream,
+		StreamPreviewIntMs: &streamInterval,
+		RateLimitMax:       &rateMax,
+		RateLimitWindow:    &rateWindow,
+		QueueMaxDepth:      &queueDepth,
+	}); err != nil {
+		t.Fatalf("SaveGlobalSettings() error: %v", err)
+	}
+
+	settings = GetGlobalSettings()
+	want := map[string]any{
+		"language":                   "zh",
+		"attachment_send":            "off",
+		"log_level":                  "debug",
+		"idle_timeout_mins":          42,
+		"thinking_messages":          false,
+		"thinking_max_len":           123,
+		"tool_messages":              false,
+		"tool_max_len":               456,
+		"stream_preview_enabled":     false,
+		"stream_preview_interval_ms": 2500,
+		"rate_limit_max_messages":    7,
+		"rate_limit_window_secs":     30,
+		"queue_max_depth":            9,
+	}
+	for key, wantValue := range want {
+		if got := settings[key]; got != wantValue {
+			t.Fatalf("settings[%s] = %#v, want %#v; all settings: %#v", key, got, wantValue, settings)
+		}
+	}
+
+	result, err := EnableWebAdmin("mgmt-secret", "bridge-secret")
+	if err != nil {
+		t.Fatalf("EnableWebAdmin() error: %v", err)
+	}
+	if result.AlreadyEnabled || result.ManagementPort != 9820 || result.BridgePort != 9810 {
+		t.Fatalf("EnableWebAdmin() result = %#v", result)
+	}
+	if result.ManagementToken != "mgmt-secret" || result.BridgeToken != "bridge-secret" {
+		t.Fatalf("web tokens = %#v", result)
+	}
+
+	result, err = EnableWebAdmin("new-mgmt", "new-bridge")
+	if err != nil {
+		t.Fatalf("EnableWebAdmin() second call error: %v", err)
+	}
+	if !result.AlreadyEnabled || result.ManagementToken != "mgmt-secret" || result.BridgeToken != "bridge-secret" {
+		t.Fatalf("EnableWebAdmin() second result = %#v", result)
 	}
 }
