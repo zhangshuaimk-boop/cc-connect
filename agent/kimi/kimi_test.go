@@ -237,22 +237,17 @@ func TestStartSessionFakeCLI_MergesEnvArgsAndPrompt(t *testing.T) {
 	defer session.Close()
 
 	require.NoError(t, session.Send("hello", nil, nil))
-	events := readKimiEventsUntilResult(t, session.Events())
+	events := readKimiEventsUntilResult(t, session.Events(), capturePath)
 	require.True(t, kimiHasEventType(events, core.EventText), "events=%#v", events)
 	require.True(t, kimiHasEventType(events, core.EventResult), "events=%#v", events)
 
-	capture := waitForKimiFileContents(t, capturePath)
-	for _, want := range []string{
-		"args=--wrapped --print --output-format stream-json --plan --resume sid-1 --model provider-model --work-dir " + tmp + " --prompt hello",
+	_ = waitForKimiFileContents(t, capturePath,
+		"args=--wrapped --print --output-format stream-json --plan --resume sid-1 --model provider-model --work-dir "+tmp+" --prompt hello",
 		"KIMI_API_KEY=provider-key",
 		"CONFIG_FLAG=from-config",
 		"PROVIDER_FLAG=from-provider",
 		"SESSION_FLAG=from-session",
-	} {
-		if !strings.Contains(capture, want) {
-			t.Fatalf("capture missing %q:\n%s", want, capture)
-		}
-	}
+	)
 }
 
 func TestKimiSessionListingAndDelete(t *testing.T) {
@@ -301,35 +296,42 @@ func writeKimiFakeCLI(t *testing.T, capturePath string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "kimi")
 	script := fmt.Sprintf(`#!/bin/sh
+tmp=%q.$$
+trap 'rm -f "$tmp"' EXIT
 {
   printf 'args=%%s\n' "$*"
   printf 'KIMI_API_KEY=%%s\n' "$KIMI_API_KEY"
   printf 'CONFIG_FLAG=%%s\n' "$CONFIG_FLAG"
   printf 'PROVIDER_FLAG=%%s\n' "$PROVIDER_FLAG"
   printf 'SESSION_FLAG=%%s\n' "$SESSION_FLAG"
-} > %q
+} > "$tmp"
+mv "$tmp" %q
 printf '{"role":"assistant","content":[{"type":"text","text":"done"}]}\n'
 printf 'To resume this session: kimi -r sid-2\n' >&2
-`, capturePath)
+`, capturePath, capturePath)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("WriteFile fake CLI: %v", err)
 	}
 	return path
 }
 
-func readKimiEventsUntilResult(t *testing.T, ch <-chan core.Event) []core.Event {
+func readKimiEventsUntilResult(t *testing.T, ch <-chan core.Event, capturePath string) []core.Event {
 	t.Helper()
 	var events []core.Event
-	deadline := time.After(2 * time.Second)
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
 	for {
 		select {
-		case evt := <-ch:
+		case evt, ok := <-ch:
+			if !ok {
+				t.Fatalf("events channel closed before result, events=%#v, capture=%s", events, readKimiFileForFailure(capturePath))
+			}
 			events = append(events, evt)
 			if evt.Type == core.EventResult {
 				return events
 			}
-		case <-deadline:
-			t.Fatalf("timed out waiting for result, events=%#v", events)
+		case <-timer.C:
+			t.Fatalf("timed out waiting for result, events=%#v, capture=%s", events, readKimiFileForFailure(capturePath))
 		}
 	}
 }
@@ -343,19 +345,43 @@ func kimiHasEventType(events []core.Event, typ core.EventType) bool {
 	return false
 }
 
-func waitForKimiFileContents(t *testing.T, path string) string {
+func waitForKimiFileContents(t *testing.T, path string, wants ...string) string {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
+	var data []byte
+	var err error
 	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
+		data, err = os.ReadFile(path)
 		if err == nil {
-			return string(data)
+			text := string(data)
+			missing := missingKimiSubstrings(text, wants)
+			if len(missing) == 0 {
+				return text
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	t.Fatalf("capture missing %v:\n%s", missingKimiSubstrings(string(data), wants), string(data))
+	return ""
+}
+
+func missingKimiSubstrings(text string, wants []string) []string {
+	var missing []string
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			missing = append(missing, want)
+		}
+	}
+	return missing
+}
+
+func readKimiFileForFailure(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err.Error()
 	}
 	return string(data)
 }

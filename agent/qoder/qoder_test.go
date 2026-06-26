@@ -555,16 +555,21 @@ func TestQoderSessionSendArgsEnvFilesAndReadLoopFallbacks(t *testing.T) {
 	envPath := filepath.Join(tmp, "env.txt")
 	fakeCLI := filepath.Join(tmp, "qodercli")
 	script := fmt.Sprintf(`#!/bin/sh
-printf '%%s\n' "$@" > %q
-printf '%%s\n' "$QODER_TEST_ENV:$TURN_ENV" > %q
+args_tmp=%q.$$
+env_tmp=%q.$$
+trap 'rm -f "$args_tmp" "$env_tmp"' EXIT
+printf '%%s\n' "$@" > "$args_tmp"
+mv "$args_tmp" %q
+printf '%%s\n' "$QODER_TEST_ENV:$TURN_ENV" > "$env_tmp"
+mv "$env_tmp" %q
 printf 'plain line one\n'
 printf 'plain line two\n'
-`, argsPath, envPath)
+`, argsPath, envPath, argsPath, envPath)
 	if err := os.WriteFile(fakeCLI, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake cli: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	qs, err := newQoderSession(ctx, fakeCLI, []string{"--profile", "unit"}, tmp, "ultimate", "default", "", []string{
 		"QODER_TEST_ENV=static",
@@ -579,19 +584,15 @@ printf 'plain line two\n'
 		t.Fatalf("Send: %v", err)
 	}
 
-	select {
-	case ev := <-qs.Events():
-		if ev.Type != core.EventResult || ev.Content != "plain line one\nplain line two" || !ev.Done {
-			t.Fatalf("fallback event = %#v", ev)
-		}
-	case <-ctx.Done():
-		t.Fatal("timeout waiting for fallback result")
+	ev := waitForQoderEvent(t, qs.Events(), core.EventResult, argsPath, envPath)
+	if ev.Content != "plain line one\nplain line two" || !ev.Done {
+		t.Fatalf("fallback event = %#v", ev)
 	}
 
-	argsBytes, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("read args: %v", err)
-	}
+	argsBytes := waitForQoderFileContents(t, argsPath,
+		"--profile", "unit", "-p", "prompt text", "-f", "stream-json", "-q", "-w", tmp, "--model", "ultimate",
+		filepath.Join(tmp, ".cc-connect", "attachments", "note.txt"),
+	)
 	args := string(argsBytes)
 	for _, want := range []string{"--profile", "unit", "-p", "prompt text", "-f", "stream-json", "-q", "-w", tmp, "--model", "ultimate"} {
 		if !strings.Contains(args, want) {
@@ -601,13 +602,73 @@ printf 'plain line two\n'
 	if !strings.Contains(args, filepath.Join(tmp, ".cc-connect", "attachments", "note.txt")) {
 		t.Fatalf("args did not include attachment path:\n%s", args)
 	}
-	envBytes, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("read env: %v", err)
-	}
+	envBytes := waitForQoderFileContents(t, envPath, "static:session")
 	if strings.TrimSpace(string(envBytes)) != "static:session" {
 		t.Fatalf("merged env = %q, want static:session", strings.TrimSpace(string(envBytes)))
 	}
+}
+
+func waitForQoderEvent(t *testing.T, ch <-chan core.Event, eventType core.EventType, diagnosticFiles ...string) core.Event {
+	t.Helper()
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case evt, ok := <-ch:
+		if !ok {
+			t.Fatalf("events channel closed waiting for %s; diagnostics=%s", eventType, readQoderDiagnostics(diagnosticFiles))
+		}
+		if evt.Type != eventType {
+			t.Fatalf("event type = %s, want %s; event=%#v", evt.Type, eventType, evt)
+		}
+		return evt
+	case <-timer.C:
+		t.Fatalf("timed out waiting for %s event; diagnostics=%s", eventType, readQoderDiagnostics(diagnosticFiles))
+		return core.Event{}
+	}
+}
+
+func waitForQoderFileContents(t *testing.T, path string, wants ...string) []byte {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var data []byte
+	var err error
+	for time.Now().Before(deadline) {
+		data, err = os.ReadFile(path)
+		if err == nil {
+			if missing := missingQoderSubstrings(string(data), wants); len(missing) == 0 {
+				return data
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	t.Fatalf("%s missing %v:\n%s", path, missingQoderSubstrings(string(data), wants), string(data))
+	return nil
+}
+
+func missingQoderSubstrings(text string, wants []string) []string {
+	var missing []string
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			missing = append(missing, want)
+		}
+	}
+	return missing
+}
+
+func readQoderDiagnostics(paths []string) string {
+	var parts []string
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			parts = append(parts, path+"="+err.Error())
+			continue
+		}
+		parts = append(parts, path+"="+string(data))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func TestQoderSessionSendClosedAndProcessError(t *testing.T) {

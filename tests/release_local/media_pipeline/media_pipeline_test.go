@@ -3,6 +3,8 @@ package media_pipefeishu
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -226,12 +228,38 @@ func newMediaEngine(t *testing.T) (*core.Engine, *recordingAgent, *mediaPlatform
 	t.Helper()
 	agent := newRecordingAgent()
 	platform := &mediaPlatform{}
-	engine := core.NewEngine("release-media", agent, []core.Platform{platform}, t.TempDir()+"/sessions.json", core.LangEnglish)
+	engineDir := filepath.Join(os.TempDir(), "cc-connect-media-pipeline-"+strings.ReplaceAll(t.Name(), "/", "-")+"-"+time.Now().Format("20060102150405.000000000"))
+	if err := os.MkdirAll(engineDir, 0o755); err != nil {
+		t.Fatalf("create media engine temp dir: %v", err)
+	}
+	engine := core.NewEngine("release-media", agent, []core.Platform{platform}, filepath.Join(engineDir, "sessions.json"), core.LangEnglish)
 	t.Cleanup(func() {
-		engine.Stop()
+		_ = engine.Stop()
 		_ = agent.Stop()
+		removeDirEventually(t, engineDir)
 	})
 	return engine, agent, platform
+}
+
+func removeDirEventually(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var err error
+	for time.Now().Before(deadline) {
+		err = os.RemoveAll(dir)
+		if err == nil {
+			if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("remove media engine temp dir %s: %v", dir, err)
+	}
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Fatalf("media engine temp dir %s still exists after cleanup: %v", dir, statErr)
+	}
 }
 
 func mediaMessage(content string) *core.Message {

@@ -365,24 +365,19 @@ func TestStartSessionFakeCLI_MergesEnvArgsAndStdinPrompt(t *testing.T) {
 	if err := session.Send("hello\nworld", nil, nil); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	events := readEventsUntilGeminiResult(t, session.Events())
+	events := readEventsUntilGeminiResult(t, session.Events(), capturePath)
 	if !containsEventType(events, core.EventText) || !containsEventType(events, core.EventResult) {
 		t.Fatalf("expected text and result events, got %#v", events)
 	}
 
-	capture := waitForGeminiFileContents(t, capturePath)
-	for _, want := range []string{
+	_ = waitForGeminiFileContents(t, capturePath,
 		"args=--wrapped --output-format stream-json --approval-mode auto_edit --resume sid-1 -m provider-model -p -",
 		"stdin=hello|world",
 		"GEMINI_API_KEY=provider-key",
 		"CONFIG_FLAG=from-config",
 		"PROVIDER_FLAG=from-provider",
 		"SESSION_FLAG=from-session",
-	} {
-		if !strings.Contains(capture, want) {
-			t.Fatalf("capture missing %q:\n%s", want, capture)
-		}
-	}
+	)
 }
 
 func TestListAndDeleteGeminiSessions(t *testing.T) {
@@ -629,6 +624,8 @@ func writeGeminiFakeCLI(t *testing.T, capturePath string) string {
 	path := filepath.Join(t.TempDir(), "gemini")
 	script := fmt.Sprintf(`#!/bin/sh
 stdin=$(cat | tr '\n' '|')
+tmp=%q.$$
+trap 'rm -f "$tmp"' EXIT
 {
   printf 'args=%%s\n' "$*"
   printf 'stdin=%%s\n' "$stdin"
@@ -636,30 +633,35 @@ stdin=$(cat | tr '\n' '|')
   printf 'CONFIG_FLAG=%%s\n' "$CONFIG_FLAG"
   printf 'PROVIDER_FLAG=%%s\n' "$PROVIDER_FLAG"
   printf 'SESSION_FLAG=%%s\n' "$SESSION_FLAG"
-} > %q
+} > "$tmp"
+mv "$tmp" %q
 printf '{"type":"init","session_id":"sid-1","model":"provider-model"}\n'
 printf '{"type":"message","role":"assistant","content":"done","delta":true}\n'
 printf '{"type":"result","status":"success"}\n'
-`, capturePath)
+`, capturePath, capturePath)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("WriteFile fake CLI: %v", err)
 	}
 	return path
 }
 
-func readEventsUntilGeminiResult(t *testing.T, ch <-chan core.Event) []core.Event {
+func readEventsUntilGeminiResult(t *testing.T, ch <-chan core.Event, capturePath string) []core.Event {
 	t.Helper()
 	var events []core.Event
-	deadline := time.After(2 * time.Second)
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
 	for {
 		select {
-		case evt := <-ch:
+		case evt, ok := <-ch:
+			if !ok {
+				t.Fatalf("events channel closed before result, events=%#v, capture=%s", events, readGeminiFileForFailure(capturePath))
+			}
 			events = append(events, evt)
 			if evt.Type == core.EventResult {
 				return events
 			}
-		case <-deadline:
-			t.Fatalf("timed out waiting for result, events=%#v", events)
+		case <-timer.C:
+			t.Fatalf("timed out waiting for result, events=%#v, capture=%s", events, readGeminiFileForFailure(capturePath))
 		}
 	}
 }
@@ -673,19 +675,43 @@ func containsEventType(events []core.Event, typ core.EventType) bool {
 	return false
 }
 
-func waitForGeminiFileContents(t *testing.T, path string) string {
+func waitForGeminiFileContents(t *testing.T, path string, wants ...string) string {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
+	var data []byte
+	var err error
 	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
+		data, err = os.ReadFile(path)
 		if err == nil {
-			return string(data)
+			text := string(data)
+			missing := missingGeminiSubstrings(text, wants)
+			if len(missing) == 0 {
+				return text
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	t.Fatalf("capture missing %v:\n%s", missingGeminiSubstrings(string(data), wants), string(data))
+	return ""
+}
+
+func missingGeminiSubstrings(text string, wants []string) []string {
+	var missing []string
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			missing = append(missing, want)
+		}
+	}
+	return missing
+}
+
+func readGeminiFileForFailure(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err.Error()
 	}
 	return string(data)
 }

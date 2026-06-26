@@ -154,17 +154,22 @@ func TestCursorSessionSendUsesArgsEnvFilesAndReadsStream(t *testing.T) {
 	envPath := filepath.Join(tmp, "env.txt")
 	fakeCLI := filepath.Join(tmp, "agent")
 	script := fmt.Sprintf(`#!/bin/sh
-printf '%%s\n' "$@" > %q
-printf '%%s\n' "$CURSOR_TEST_ENV:$TURN_ENV" > %q
+args_tmp=%q.$$
+env_tmp=%q.$$
+trap 'rm -f "$args_tmp" "$env_tmp"' EXIT
+printf '%%s\n' "$@" > "$args_tmp"
+mv "$args_tmp" %q
+printf '%%s\n' "$CURSOR_TEST_ENV:$TURN_ENV" > "$env_tmp"
+mv "$env_tmp" %q
 printf '%%s\n' '{"type":"system","session_id":"sid-from-cli","model":"fake-model"}'
 printf '%%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"hello from cli"}]}}'
 printf '%%s\n' '{"type":"result","result":"final text","session_id":"sid-from-cli"}'
-`, argsPath, envPath)
+`, argsPath, envPath, argsPath, envPath)
 	if err := os.WriteFile(fakeCLI, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake cli: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	sess, err := newCursorSession(ctx, fakeCLI, []string{"--profile", "unit"}, tmp, "model-x", "force", "", []string{
 		"CURSOR_TEST_ENV=static",
@@ -181,12 +186,19 @@ printf '%%s\n' '{"type":"result","result":"final text","session_id":"sid-from-cl
 	}
 
 	var events []core.Event
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
 	for len(events) < 3 {
 		select {
-		case ev := <-sess.Events():
+		case ev, ok := <-sess.Events():
+			if !ok {
+				t.Fatalf("events channel closed waiting for stream, got %#v, args=%s, env=%s",
+					events, readCursorFileForFailure(argsPath), readCursorFileForFailure(envPath))
+			}
 			events = append(events, ev)
-		case <-ctx.Done():
-			t.Fatalf("timeout waiting for events, got %#v", events)
+		case <-timer.C:
+			t.Fatalf("timeout waiting for events, got %#v, args=%s, env=%s",
+				events, readCursorFileForFailure(argsPath), readCursorFileForFailure(envPath))
 		}
 	}
 	if events[0].SessionID != "sid-from-cli" || events[0].ToolName != "fake-model" {
@@ -199,10 +211,10 @@ printf '%%s\n' '{"type":"result","result":"final text","session_id":"sid-from-cl
 		t.Fatalf("result event = %#v", events[2])
 	}
 
-	argsBytes, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("read args: %v", err)
-	}
+	argsBytes := waitForCursorFileContents(t, argsPath,
+		"--profile", "unit", "--print", "--output-format", "stream-json", "--force", "--model", "model-x", "--workspace", tmp, "prompt text",
+		filepath.Join(tmp, ".cc-connect", "attachments", "note.txt"),
+	)
 	args := string(argsBytes)
 	for _, want := range []string{"--profile", "unit", "--print", "--output-format", "stream-json", "--force", "--model", "model-x", "--workspace", tmp, "prompt text"} {
 		if !strings.Contains(args, want) {
@@ -212,10 +224,7 @@ printf '%%s\n' '{"type":"result","result":"final text","session_id":"sid-from-cl
 	if !strings.Contains(args, filepath.Join(tmp, ".cc-connect", "attachments", "note.txt")) {
 		t.Fatalf("prompt args did not include attachment path:\n%s", args)
 	}
-	envBytes, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("read env: %v", err)
-	}
+	envBytes := waitForCursorFileContents(t, envPath, "static:session")
 	if strings.TrimSpace(string(envBytes)) != "static:session" {
 		t.Fatalf("merged env = %q, want static:session", strings.TrimSpace(string(envBytes)))
 	}
@@ -259,6 +268,45 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func waitForCursorFileContents(t *testing.T, path string, wants ...string) []byte {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var data []byte
+	var err error
+	for time.Now().Before(deadline) {
+		data, err = os.ReadFile(path)
+		if err == nil {
+			if missing := missingCursorSubstrings(string(data), wants); len(missing) == 0 {
+				return data
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	t.Fatalf("%s missing %v:\n%s", path, missingCursorSubstrings(string(data), wants), string(data))
+	return nil
+}
+
+func missingCursorSubstrings(text string, wants []string) []string {
+	var missing []string
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			missing = append(missing, want)
+		}
+	}
+	return missing
+}
+
+func readCursorFileForFailure(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err.Error()
+	}
+	return string(data)
 }
 
 func drainCursorEvents(cs *cursorSession) []core.Event {

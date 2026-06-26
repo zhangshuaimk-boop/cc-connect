@@ -593,11 +593,11 @@ printf '%s\n' '{"type":"turn.completed"}'
 	if err := session.Send("hello fake", nil, nil); err != nil {
 		t.Fatalf("Send() = %v", err)
 	}
-	text := requireEvent(t, session.Events(), core.EventText)
+	text := requireEvent(t, session.Events(), core.EventText, argsFile, stdinFile, envFile)
 	if text.Content != "fake answer" {
 		t.Fatalf("text event content = %q", text.Content)
 	}
-	result := requireEvent(t, session.Events(), core.EventResult)
+	result := requireEvent(t, session.Events(), core.EventResult, argsFile, stdinFile, envFile)
 	if !result.Done || result.SessionID != "thread-from-cli" {
 		t.Fatalf("result event = %#v", result)
 	}
@@ -605,10 +605,7 @@ printf '%s\n' '{"type":"turn.completed"}'
 		t.Fatalf("Close() = %v", err)
 	}
 
-	argsData, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("read args file: %v", err)
-	}
+	argsData := waitForTraexFileContents(t, argsFile, "--profile", "dev", "exec", "--skip-git-repo-check", "--model", "provider-model", "--json", "--cd")
 	args := strings.Fields(string(argsData))
 	for _, want := range [][]string{
 		{"--profile", "dev", "exec", "--skip-git-repo-check"},
@@ -619,11 +616,11 @@ printf '%s\n' '{"type":"turn.completed"}'
 			t.Fatalf("args missing %v in %v", want, args)
 		}
 	}
-	stdinData, _ := os.ReadFile(stdinFile)
+	stdinData := waitForTraexFileContents(t, stdinFile, "hello fake")
 	if string(stdinData) != "hello fake" {
 		t.Fatalf("stdin = %q", stdinData)
 	}
-	envData, _ := os.ReadFile(envFile)
+	envData := waitForTraexFileContents(t, envFile, "CONFIG_ENV=one", "OPENAI_API_KEY=provider-key", "SESSION_ENV=two")
 	for _, want := range []string{"CONFIG_ENV=one", "OPENAI_API_KEY=provider-key", "SESSION_ENV=two"} {
 		if !strings.Contains(string(envData), want) {
 			t.Fatalf("env missing %q in:\n%s", want, envData)
@@ -894,19 +891,21 @@ func containsSequence(values, want []string) bool {
 	return false
 }
 
-func requireEvent(t *testing.T, ch <-chan core.Event, eventType core.EventType) core.Event {
+func requireEvent(t *testing.T, ch <-chan core.Event, eventType core.EventType, diagnosticFiles ...string) core.Event {
 	t.Helper()
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
 	select {
 	case evt, ok := <-ch:
 		if !ok {
-			t.Fatalf("events channel closed waiting for %s", eventType)
+			t.Fatalf("events channel closed waiting for %s; diagnostics=%s", eventType, readTraexDiagnostics(diagnosticFiles))
 		}
 		if evt.Type != eventType {
 			t.Fatalf("event type = %s, want %s; event=%#v", evt.Type, eventType, evt)
 		}
 		return evt
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for %s event", eventType)
+	case <-timer.C:
+		t.Fatalf("timed out waiting for %s event; diagnostics=%s", eventType, readTraexDiagnostics(diagnosticFiles))
 		return core.Event{}
 	}
 }
@@ -928,6 +927,50 @@ func writeFakeTraexScript(t *testing.T, dir, script string) {
 	if err := os.WriteFile(filepath.Join(dir, "traex"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake traex: %v", err)
 	}
+}
+
+func waitForTraexFileContents(t *testing.T, path string, wants ...string) []byte {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var data []byte
+	var err error
+	for time.Now().Before(deadline) {
+		data, err = os.ReadFile(path)
+		if err == nil {
+			if missing := missingTraexSubstrings(string(data), wants); len(missing) == 0 {
+				return data
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	t.Fatalf("%s missing %v:\n%s", path, missingTraexSubstrings(string(data), wants), string(data))
+	return nil
+}
+
+func missingTraexSubstrings(text string, wants []string) []string {
+	var missing []string
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			missing = append(missing, want)
+		}
+	}
+	return missing
+}
+
+func readTraexDiagnostics(paths []string) string {
+	var parts []string
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			parts = append(parts, path+"="+err.Error())
+			continue
+		}
+		parts = append(parts, path+"="+string(data))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func jsonLine(t *testing.T, typ string, payload any) string {
