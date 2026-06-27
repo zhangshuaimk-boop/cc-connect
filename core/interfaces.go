@@ -78,6 +78,12 @@ type PlatformPromptInjector interface {
 	SetPlatformPrompt(prompt string)
 }
 
+// SelfIDProvider is an optional interface for platforms that know their own
+// identity on the messaging platform, such as a Feishu bot open_id.
+type SelfIDProvider interface {
+	SelfID() string
+}
+
 // AgentSystemPrompt returns the system prompt fragment that informs agents about
 // cc-connect capabilities (cron scheduling, etc.).
 // The prompt is designed to be appended to the agent's existing system prompt.

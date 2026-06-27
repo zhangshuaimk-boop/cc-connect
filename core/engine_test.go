@@ -107,6 +107,15 @@ func (p *recallCheckingPlatform) checkedReplyCtxs() []any {
 	return out
 }
 
+type selfIDPlatform struct {
+	stubPlatformEngine
+	selfID string
+}
+
+func (p *selfIDPlatform) SelfID() string {
+	return p.selfID
+}
+
 type stubCronReplyTargetPlatform struct {
 	stubPlatformEngine
 	reconstructSessionKey string
@@ -10139,7 +10148,7 @@ func TestBuildSenderPrompt_Enabled(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hello world", "user123", "Alice", "feishu", "feishu:channel42:user123", "")
+	result := e.buildSenderPrompt("hello world", "user123", "Alice", "feishu", "feishu:channel42:user123", "", "")
 	expected := "[cc-connect sender_id=user123 sender_name=\"Alice\" platform=feishu chat_id=channel42]\nhello world"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
@@ -10150,7 +10159,7 @@ func TestBuildSenderPrompt_Disabled(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(false)
 
-	result := e.buildSenderPrompt("hello", "user1", "Alice", "feishu", "feishu:ch:user1", "")
+	result := e.buildSenderPrompt("hello", "user1", "Alice", "feishu", "feishu:ch:user1", "", "")
 	if result != "hello" {
 		t.Fatalf("expected raw content when disabled, got %q", result)
 	}
@@ -10160,7 +10169,7 @@ func TestBuildSenderPrompt_EmptyUserID(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hello", "", "Bob", "feishu", "feishu:ch:user1", "")
+	result := e.buildSenderPrompt("hello", "", "Bob", "feishu", "feishu:ch:user1", "", "")
 	if result != "hello" {
 		t.Fatalf("expected raw content when userID is empty, got %q", result)
 	}
@@ -10170,7 +10179,7 @@ func TestBuildSenderPrompt_EmptyUserName(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hello", "user1", "", "feishu", "feishu:ch:user1", "")
+	result := e.buildSenderPrompt("hello", "user1", "", "feishu", "feishu:ch:user1", "", "")
 	expected := "[cc-connect sender_id=user1 platform=feishu chat_id=ch]\nhello"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
@@ -10181,10 +10190,52 @@ func TestBuildSenderPrompt_NameWithSpaces(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hi", "U999", "Jim Tang", "feishu", "feishu:C012:U999", "")
+	result := e.buildSenderPrompt("hi", "U999", "Jim Tang", "feishu", "feishu:C012:U999", "", "")
 	expected := "[cc-connect sender_id=U999 sender_name=\"Jim Tang\" platform=feishu chat_id=C012]\nhi"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
+	}
+}
+
+func TestBuildSenderPrompt_IncludesSelfID(t *testing.T) {
+	e := newTestEngine()
+	e.SetInjectSender(true)
+
+	result := e.buildSenderPrompt("hello", "user1", "Alice", "feishu", "feishu:ch:user1", "", "ou_bot")
+	expected := "[cc-connect sender_id=user1 sender_name=\"Alice\" platform=feishu chat_id=ch bot_open_id=ou_bot]\nhello"
+	if result != expected {
+		t.Fatalf("got %q, want %q", result, expected)
+	}
+}
+
+func TestReceiveMessage_IncludesPlatformSelfIDInPrompt(t *testing.T) {
+	p := &selfIDPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
+		selfID:             "ou_bot",
+	}
+	agentSession := newResultAgentSession("ok")
+	e := NewEngine("test", &resultAgent{session: agentSession}, []Platform{p}, "", LangEnglish)
+	e.SetInjectSender(true)
+
+	e.ReceiveMessage(p, &Message{
+		SessionKey: "feishu:chat:user1",
+		Platform:   "feishu",
+		UserID:     "user1",
+		UserName:   "Alice",
+		Content:    "hello",
+		ReplyCtx:   "reply-ctx",
+	})
+
+	sent := waitForPlatformSend(&p.stubPlatformEngine, 1, 3*time.Second)
+	if len(sent) == 0 || sent[0] != "ok" {
+		t.Fatalf("sent = %v, want ok", sent)
+	}
+	if len(agentSession.sentPrompts) != 1 {
+		t.Fatalf("sentPrompts = %d, want 1: %#v", len(agentSession.sentPrompts), agentSession.sentPrompts)
+	}
+	want := `[cc-connect sender_id=user1 sender_name="Alice" platform=feishu chat_id=chat bot_open_id=ou_bot]`
+	if !strings.Contains(agentSession.sentPrompts[0], want) {
+		t.Fatalf("prompt missing self id header %q:\n%s", want, agentSession.sentPrompts[0])
 	}
 }
 
@@ -10228,7 +10279,7 @@ func TestBuildSenderPrompt_DifferentPlatforms(t *testing.T) {
 		{"feishu", "feishu:C012345:carol", "C012345"},
 	}
 	for _, tc := range platforms {
-		result := e.buildSenderPrompt("msg", "uid", "TestUser", tc.platform, tc.sessionKey, "")
+		result := e.buildSenderPrompt("msg", "uid", "TestUser", tc.platform, tc.sessionKey, "", "")
 		if !strings.Contains(result, "platform="+tc.platform) {
 			t.Errorf("missing platform=%s in %q", tc.platform, result)
 		}
@@ -10242,7 +10293,7 @@ func TestBuildSenderPrompt_SanitizesSpecialChars(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(true)
 
-	result := e.buildSenderPrompt("hi", "U1", "Evil\"Name\nInject", "feishu", "feishu:C1:U1", "")
+	result := e.buildSenderPrompt("hi", "U1", "Evil\"Name\nInject", "feishu", "feishu:C1:U1", "", "")
 	if strings.Contains(result, `"Name`) || strings.Contains(result, "\n"+`Inject`) {
 		t.Fatalf("quotes/newlines should be sanitized, got %q", result)
 	}
@@ -10257,7 +10308,7 @@ func TestBuildSenderPrompt_ChannelKeyOverridesSessionKey(t *testing.T) {
 
 	// When channelKey is provided, it should be used as chat_id instead of
 	// extracting from sessionKey (which would give "g" for feishu).
-	result := e.buildSenderPrompt("hello", "staff1", "Alice", "feishu", "feishu:g:cidXXX:staff1", "cidXXX")
+	result := e.buildSenderPrompt("hello", "staff1", "Alice", "feishu", "feishu:g:cidXXX:staff1", "cidXXX", "")
 	expected := "[cc-connect sender_id=staff1 sender_name=\"Alice\" platform=feishu chat_id=cidXXX]\nhello"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)
@@ -10270,7 +10321,7 @@ func TestBuildSenderPrompt_FallbackWithoutChannelKey(t *testing.T) {
 
 	// When channelKey is empty, extractChannelID heuristic should detect
 	// the 4-segment format and extract the correct channel.
-	result := e.buildSenderPrompt("hello", "staff1", "Alice", "feishu", "feishu:g:cidXXX:staff1", "")
+	result := e.buildSenderPrompt("hello", "staff1", "Alice", "feishu", "feishu:g:cidXXX:staff1", "", "")
 	expected := "[cc-connect sender_id=staff1 sender_name=\"Alice\" platform=feishu chat_id=cidXXX]\nhello"
 	if result != expected {
 		t.Fatalf("got %q, want %q", result, expected)

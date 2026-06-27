@@ -404,6 +404,10 @@ func (p *Platform) getBotOpenID() string {
 	return p.botOpenID
 }
 
+func (p *Platform) SelfID() string {
+	return p.getBotOpenID()
+}
+
 func (p *Platform) KeepPreviewOnFinish() bool {
 	return p.useInteractiveCard
 }
