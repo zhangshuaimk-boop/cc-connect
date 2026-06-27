@@ -21,9 +21,14 @@ func init() {
 	core.RegisterAgent("traecli", New)
 }
 
-// Agent drives Trae CLI (traex/traecli) using `traex exec --json`.
+// Agent drives Trae CLI (traex/traecli).
 //
-// Modes (maps to traex exec flags):
+// `traex exec` has no approval IPC, so approvals are not interactive on the
+// exec backend. TraeX exposes an experimental `exec-server`, but traecli
+// 0.200.14 only implements initialize; backend="app_server" fails fast until
+// the RPC methods needed for turns and approvals are available.
+//
+// Modes on the exec backend (maps to traex exec flags):
 //   - "default":   normal permissions (ask permission for tools)
 //   - "plan":      --permission-mode plan (read-only analysis)
 //   - "auto-edit": --permission-mode bypass_permissions (auto-approve)
@@ -34,6 +39,8 @@ type Agent struct {
 	model           string
 	reasoningEffort string
 	mode            string
+	backend         string // "exec" | "app_server"
+	appServerURL    string
 	cliBin          string   // CLI binary name, default "traex"
 	cliExtraArgs    []string // extra args parsed from cmd after the binary
 	providers       []core.ProviderConfig
@@ -51,7 +58,11 @@ func New(opts map[string]any) (core.Agent, error) {
 	model, _ := opts["model"].(string)
 	reasoningEffort, _ := opts["reasoning_effort"].(string)
 	mode, _ := opts["mode"].(string)
+	backend, _ := opts["backend"].(string)
+	appServerURL, _ := opts["app_server_url"].(string)
 	mode = normalizeMode(mode)
+	backend = normalizeBackend(backend)
+	appServerURL = normalizeAppServerURL(appServerURL)
 
 	cliBin, cliExtraArgs := core.ParseCmdOpts(opts, "traex")
 
@@ -64,11 +75,33 @@ func New(opts map[string]any) (core.Agent, error) {
 		model:           model,
 		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
 		mode:            mode,
+		backend:         backend,
+		appServerURL:    appServerURL,
 		cliBin:          cliBin,
 		cliExtraArgs:    cliExtraArgs,
 		configEnv:       core.ParseConfigEnv(opts),
 		activeIdx:       -1,
 	}, nil
+}
+
+func normalizeBackend(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "app-server", "app_server", "appserver", "ws":
+		return "app_server"
+	default:
+		return "exec"
+	}
+}
+
+func normalizeAppServerURL(raw string) string {
+	url := strings.TrimSpace(raw)
+	if url == "" {
+		return "stdio://"
+	}
+	if strings.EqualFold(url, "stdio") {
+		return "stdio://"
+	}
+	return url
 }
 
 func normalizeMode(raw string) string {
@@ -174,6 +207,8 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	mode := a.mode
 	model := a.model
 	reasoningEffort := a.reasoningEffort
+	backend := a.backend
+	appServerURL := a.appServerURL
 	cliBin := a.cliBin
 	cliExtraArgs := a.cliExtraArgs
 	workDir := a.workDir
@@ -190,6 +225,10 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		provName = a.providers[a.activeIdx].Name
 	}
 	a.mu.Unlock()
+
+	if backend == "app_server" {
+		return newTraexAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName)
+	}
 
 	return newTraexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName)
 }
@@ -233,13 +272,17 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	defer a.mu.RUnlock()
 
 	opts := map[string]any{
-		"mode": a.mode,
+		"mode":    a.mode,
+		"backend": a.backend,
 	}
 	if a.model != "" {
 		opts["model"] = a.model
 	}
 	if a.reasoningEffort != "" {
 		opts["reasoning_effort"] = a.reasoningEffort
+	}
+	if a.appServerURL != "" {
+		opts["app_server_url"] = a.appServerURL
 	}
 	return opts
 }

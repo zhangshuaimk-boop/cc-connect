@@ -39,6 +39,41 @@ func TestNormalizeMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeBackendAndAppServerURL(t *testing.T) {
+	backendTests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "exec"},
+		{"exec", "exec"},
+		{"app_server", "app_server"},
+		{"app-server", "app_server"},
+		{"appserver", "app_server"},
+		{"ws", "app_server"},
+		{"unknown", "exec"},
+	}
+	for _, tt := range backendTests {
+		if got := normalizeBackend(tt.input); got != tt.expected {
+			t.Errorf("normalizeBackend(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+
+	urlTests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "stdio://"},
+		{"stdio", "stdio://"},
+		{"stdio://", "stdio://"},
+		{"ws://127.0.0.1:3946", "ws://127.0.0.1:3946"},
+	}
+	for _, tt := range urlTests {
+		if got := normalizeAppServerURL(tt.input); got != tt.expected {
+			t.Errorf("normalizeAppServerURL(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
 func TestAgentBasicConfigProviderAndOptions(t *testing.T) {
 	t.Setenv("TRAE_HOME", t.TempDir())
 
@@ -47,6 +82,8 @@ func TestAgentBasicConfigProviderAndOptions(t *testing.T) {
 		model:           "fallback-model",
 		reasoningEffort: "low",
 		mode:            "default",
+		backend:         "app_server",
+		appServerURL:    "stdio://",
 		cliBin:          "traex",
 		activeIdx:       -1,
 		configEnv:       []string{"CONFIG_ENV=one"},
@@ -95,7 +132,7 @@ func TestAgentBasicConfigProviderAndOptions(t *testing.T) {
 		t.Fatalf("GetMode() = %q, want auto-edit", got)
 	}
 	opts := agent.WorkspaceAgentOptions()
-	if opts["mode"] != "auto-edit" || opts["model"] != "manual-model" {
+	if opts["mode"] != "auto-edit" || opts["model"] != "manual-model" || opts["backend"] != "app_server" || opts["app_server_url"] != "stdio://" {
 		t.Fatalf("WorkspaceAgentOptions() = %#v", opts)
 	}
 
@@ -167,6 +204,8 @@ exit 0
 		"model":            "gpt-test",
 		"reasoning_effort": "x-high",
 		"mode":             "auto",
+		"backend":          "app-server",
+		"app_server_url":   "stdio",
 		"cmd":              "traex --profile dev",
 		"env":              map[string]any{"CONFIG_A": "one", "IGNORED": 2},
 	})
@@ -177,11 +216,83 @@ exit 0
 	if agent.workDir != "/tmp/project" || agent.model != "gpt-test" || agent.reasoningEffort != "xhigh" || agent.mode != "full-auto" {
 		t.Fatalf("agent fields = %#v", agent)
 	}
+	if agent.backend != "app_server" || agent.appServerURL != "stdio://" {
+		t.Fatalf("backend fields = backend=%q appServerURL=%q", agent.backend, agent.appServerURL)
+	}
 	if agent.cliBin != "traex" || strings.Join(agent.cliExtraArgs, " ") != "--profile dev" {
 		t.Fatalf("cli parsed as bin=%q extra=%v", agent.cliBin, agent.cliExtraArgs)
 	}
 	if !containsString(agent.configEnv, "CONFIG_A=one") || containsString(agent.configEnv, "IGNORED=2") {
 		t.Fatalf("configEnv = %v", agent.configEnv)
+	}
+}
+
+func TestStartSessionAppServerFailsFastWhenExecServerIsStub(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeTraexScript(t, binDir, `#!/bin/sh
+if [ "$1" = "exec-server" ]; then
+  IFS= read -r init_req
+  printf '%s\n' '{"id":1,"result":{"sessionId":"probe-session"}}'
+  IFS= read -r thread_req
+  printf '%s\n' '{"id":2,"error":{"code":-32601,"message":"exec-server stub does not implement thread/start yet"}}'
+  sleep 1
+  exit 0
+fi
+exit 0
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got, err := New(map[string]any{
+		"work_dir":       t.TempDir(),
+		"backend":        "app_server",
+		"app_server_url": "stdio",
+	})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+
+	_, err = got.StartSession(context.Background(), "")
+	if err == nil {
+		t.Fatal("StartSession(app_server) returned nil error")
+	}
+	if !strings.Contains(err.Error(), "requires traex CLI with exec-server thread RPC support") {
+		t.Fatalf("StartSession(app_server) error = %v", err)
+	}
+}
+
+func TestStartSessionExecBackendKeepsExistingSessionPath(t *testing.T) {
+	agent := &Agent{
+		workDir:         t.TempDir(),
+		model:           "gpt-test",
+		reasoningEffort: "high",
+		mode:            "plan",
+		backend:         "exec",
+		cliBin:          "traex",
+		configEnv:       []string{"CONFIG_ENV=1"},
+		activeIdx:       -1,
+	}
+
+	sess, err := agent.StartSession(context.Background(), "thread-existing")
+	if err != nil {
+		t.Fatalf("StartSession(exec) = %v", err)
+	}
+	defer sess.Close()
+
+	ts, ok := sess.(*traexSession)
+	if !ok {
+		t.Fatalf("StartSession(exec) returned %T, want *traexSession", sess)
+	}
+	if got := ts.CurrentSessionID(); got != "thread-existing" {
+		t.Fatalf("CurrentSessionID() = %q, want thread-existing", got)
+	}
+	if got := ts.GetModel(); got != "gpt-test" {
+		t.Fatalf("GetModel() = %q, want gpt-test", got)
+	}
+	if got := ts.GetReasoningEffort(); got != "high" {
+		t.Fatalf("GetReasoningEffort() = %q, want high", got)
+	}
+	if !containsString(ts.extraEnv, "CONFIG_ENV=1") {
+		t.Fatalf("extraEnv = %v, want CONFIG_ENV=1", ts.extraEnv)
 	}
 }
 
