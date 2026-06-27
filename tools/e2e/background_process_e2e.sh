@@ -22,10 +22,16 @@ Default target:
   CC_E2E_EXPECT_BACKGROUND_SURVIVES=1
 
 Known current status:
-  - Claude Code test bot is expected to pass with a plain nohup background
-    process.
-  - Traex test bot is expected to pass with a synchronous double-fork launcher.
-    Plain `nohup ... &` is cleaned up by Traex exec after the turn completes.
+  - Claude Code test bot is expected to pass.
+  - Traex uses the same test case but is currently expected to fail because the
+    background process exits after the turn completes. To reproduce that known
+    failure without failing this script:
+
+    CC_REAL_FEISHU_E2E=1 \
+    CC_E2E_PROJECT=idiom-chain-bot \
+    CC_E2E_EXPECTED_AGENT=traex \
+    CC_E2E_EXPECT_BACKGROUND_SURVIVES=0 \
+    tools/e2e/background_process_e2e.sh
 
 Required:
   CC_REAL_FEISHU_E2E=1
@@ -240,66 +246,21 @@ PY
 )" || die "could not extract target bot open_id for project=$project; set CC_E2E_TARGET_OPEN_ID explicitly"
 fi
 
-message_text="$(python3 - "$target_open_id" "$stamp" "$probe_dir" "$probe_log" "$pid_file" "$expected_agent" <<'PY'
+message_text="$(python3 - "$target_open_id" "$stamp" "$probe_dir" "$probe_log" "$pid_file" <<'PY'
 import shlex, sys
 
-target_open_id, stamp, probe_dir, probe_log, pid_file, expected_agent = sys.argv[1:7]
-
-if expected_agent == "traex":
-    launcher = f"{probe_dir}/start-background.py"
-    cmd = "\n".join([
-        f"mkdir -p {shlex.quote(probe_dir)}",
-        f"rm -f {shlex.quote(probe_log)} {shlex.quote(pid_file)} {shlex.quote(launcher)}",
-        f"cat > {shlex.quote(launcher)} <<'PY'",
-        "import os, sys, time",
-        "log = sys.argv[1]",
-        "pidfile = sys.argv[2]",
-        "pid = os.fork()",
-        "if pid == 0:",
-        "    os.setsid()",
-        "    if os.fork() > 0:",
-        "        os._exit(0)",
-        "    with open('/dev/null', 'rb', buffering=0) as f:",
-        "        os.dup2(f.fileno(), 0)",
-        "    with open('/dev/null', 'ab', buffering=0) as f:",
-        "        os.dup2(f.fileno(), 1)",
-        "        os.dup2(f.fileno(), 2)",
-        "    with open(pidfile, 'w') as f:",
-        "        f.write(str(os.getpid()))",
-        "        f.flush()",
-        "    i = 0",
-        "    while True:",
-        "        i += 1",
-        "        with open(log, 'a') as f:",
-        "            f.write(f'{int(time.time())} {i}\\n')",
-        "            f.flush()",
-        "        time.sleep(1)",
-        "try:",
-        "    os.waitpid(pid, 0)",
-        "except ChildProcessError:",
-        "    pass",
-        "for _ in range(50):",
-        "    if os.path.exists(pidfile) and os.path.getsize(pidfile) > 0 and os.path.exists(log) and os.path.getsize(log) > 0:",
-        "        print(f'BACKGROUND_STARTED pid={open(pidfile).read().strip()}')",
-        "        raise SystemExit(0)",
-        "    time.sleep(0.1)",
-        "raise SystemExit('background process did not become ready')",
-        "PY",
-        f"python3 {shlex.quote(launcher)} {shlex.quote(probe_log)} {shlex.quote(pid_file)}",
-    ])
-else:
-    cmd = "\n".join([
-        f"mkdir -p {shlex.quote(probe_dir)}",
-        f"rm -f {shlex.quote(probe_log)} {shlex.quote(pid_file)}",
-        "nohup sh -c 'log=\"$1\"; i=0; while :; do i=$((i+1)); printf \"%s %s\\n\" \"$(date +%s)\" \"$i\" >> \"$log\"; sleep 1; done' sh "
-        + f"{shlex.quote(probe_log)} </dev/null >/dev/null 2>&1 &",
-        f"echo $! > {shlex.quote(pid_file)}",
-        f"echo \"BACKGROUND_STARTED pid=$(cat {shlex.quote(pid_file)}) log={probe_log}\"",
-    ])
-
+target_open_id, stamp, probe_dir, probe_log, pid_file = sys.argv[1:6]
+cmd = "\n".join([
+    f"mkdir -p {shlex.quote(probe_dir)}",
+    f"rm -f {shlex.quote(probe_log)} {shlex.quote(pid_file)}",
+    "nohup sh -c 'log=\"$1\"; i=0; while :; do i=$((i+1)); printf \"%s %s\\n\" \"$(date +%s)\" \"$i\" >> \"$log\"; sleep 1; done' sh "
+    + f"{shlex.quote(probe_log)} </dev/null >/dev/null 2>&1 &",
+    f"echo $! > {shlex.quote(pid_file)}",
+    f"echo \"BACKGROUND_STARTED pid=$(cat {shlex.quote(pid_file)}) log={probe_log}\"",
+])
 print(f"""<at user_id="{target_open_id}"></at> background-process-e2e-{stamp}
 
-请执行下面这个后台进程存活测试。必须调用命令行工具执行代码块，不要只用文字解释。不要改动命令，不要等待后台进程结束；命令完成并输出 BACKGROUND_STARTED 后，本轮回复即可结束。
+请执行下面这个后台进程存活测试。不要改动命令，不要等待后台进程结束；命令完成并输出 BACKGROUND_STARTED 后，本轮回复即可结束。
 
 ```bash
 {cmd}
@@ -325,11 +286,6 @@ wait_log "$app_log" "processing message.*session=" "message processing"
 wait_log "$app_log" "turn complete.*msg_id=$message_id" "turn complete"
 
 sleep "$settle_secs"
-if [ ! -s "$pid_file" ]; then
-  if grep -E "turn complete.*msg_id=$message_id.*tools=0|turn complete.*tools=0.*msg_id=$message_id" "$app_log" >/dev/null 2>&1; then
-    die "background pid file was not created; agent completed the turn without executing tools"
-  fi
-fi
 wait_file "$pid_file" "background pid file"
 bg_pid="$(tr -cd '0-9' <"$pid_file")"
 [ -n "$bg_pid" ] || die "background pid file does not contain a pid: $pid_file"
