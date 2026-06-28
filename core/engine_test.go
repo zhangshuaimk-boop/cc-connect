@@ -10160,6 +10160,16 @@ func TestBuildSenderPrompt_Enabled(t *testing.T) {
 	}
 }
 
+func TestBuildSenderPrompt_DefaultEnabled(t *testing.T) {
+	e := newTestEngine()
+
+	result := e.buildSenderPrompt("hello world", "user123", "Alice", "feishu", "feishu:channel42:user123", "", "", "")
+	expected := "[cc-connect sender_id=user123 sender_name=\"Alice\" platform=feishu chat_id=channel42]\nhello world"
+	if result != expected {
+		t.Fatalf("got %q, want %q", result, expected)
+	}
+}
+
 func TestBuildSenderPrompt_Disabled(t *testing.T) {
 	e := newTestEngine()
 	e.SetInjectSender(false)

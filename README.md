@@ -62,6 +62,12 @@ app_secret = "${FEISHU_APP_SECRET}"
 allow_from = "*"
 ```
 
+`inject_sender` defaults to `true`. cc-connect prepends a sender header such as
+`[cc-connect sender_id=... platform=feishu chat_id=...]` to agent prompts so
+multi-user chats, agent-to-agent relay, and `admin_from` checks can identify the
+message sender. Set `inject_sender = false` in a project only when that header
+must be disabled.
+
 ## Documentation
 
 - [Feishu setup guide](docs/feishu.md)

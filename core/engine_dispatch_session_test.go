@@ -236,6 +236,7 @@ func TestEngineHandleCommandDispatch_CustomPromptAndExecPermission(t *testing.T)
 		agent := &dispatchRecordingAgent{next: []*dispatchRecordingSession{session}}
 		e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 		defer e.Stop()
+		e.SetInjectSender(false)
 		e.commands.Add("triage", "triage issue", "Triage {{1}} {{2*:now}}", "", "", "config")
 
 		if !e.handleCommand(p, &Message{SessionKey: "test:custom", UserID: "user", ReplyCtx: "ctx"}, "/triage INC-1 please now") {

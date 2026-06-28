@@ -321,7 +321,7 @@ func newReleaseLocalRuntime(t *testing.T, body string) *releaseLocalRuntime {
 	engine.SetShowContextIndicator(showCtx)
 	engine.SetReplyFooterEnabled(showFooter)
 	engine.SetAttachmentSendEnabled(cfg.AttachmentSend != "off")
-	engine.SetInjectSender(proj.InjectSender != nil && *proj.InjectSender)
+	engine.SetInjectSender(proj.InjectSender == nil || *proj.InjectSender)
 	t.Cleanup(func() {
 		engine.Stop()
 		_ = agent.Stop()
@@ -556,6 +556,68 @@ app_secret = "fake-secret"
 	)
 	if !errors.Is(err, core.ErrAttachmentSendDisabled) {
 		t.Fatalf("SendToSessionWithAttachments() error = %v, want ErrAttachmentSendDisabled", err)
+	}
+}
+
+func TestReleaseConfig_InjectSenderDefaultsEnabledWithFakeRuntime(t *testing.T) {
+	runtime := newReleaseLocalRuntime(t, `
+data_dir = "`+filepath.ToSlash(t.TempDir())+`"
+
+[[projects]]
+name = "release"
+
+[projects.agent]
+type = "fake-agent"
+
+[[projects.platforms]]
+type = "fake"
+[projects.platforms.options]
+app_id = "fake-app"
+app_secret = "fake-secret"
+`)
+
+	if err := runtime.engine.Start(); err != nil {
+		t.Fatalf("engine.Start() error = %v", err)
+	}
+	platform := runtime.platforms[0]
+	platform.emit(t, configScenarioMessage("default sender injection"))
+
+	prompt := runtime.agent.waitRecord(t)
+	if !strings.Contains(prompt, `[cc-connect sender_id=user-1 sender_name="Release User" platform=fake chat_id=chat-1]`) {
+		t.Fatalf("prompt = %q, want default injected sender header", prompt)
+	}
+}
+
+func TestReleaseConfig_InjectSenderExplicitFalseDisablesFakeRuntime(t *testing.T) {
+	runtime := newReleaseLocalRuntime(t, `
+data_dir = "`+filepath.ToSlash(t.TempDir())+`"
+
+[[projects]]
+name = "release"
+inject_sender = false
+
+[projects.agent]
+type = "fake-agent"
+
+[[projects.platforms]]
+type = "fake"
+[projects.platforms.options]
+app_id = "fake-app"
+app_secret = "fake-secret"
+`)
+
+	if err := runtime.engine.Start(); err != nil {
+		t.Fatalf("engine.Start() error = %v", err)
+	}
+	platform := runtime.platforms[0]
+	platform.emit(t, configScenarioMessage("disabled sender injection"))
+
+	prompt := runtime.agent.waitRecord(t)
+	if strings.Contains(prompt, "[cc-connect sender_id=") {
+		t.Fatalf("prompt = %q, want no injected sender header", prompt)
+	}
+	if !strings.Contains(prompt, "disabled sender injection") {
+		t.Fatalf("prompt = %q, want message content", prompt)
 	}
 }
 
