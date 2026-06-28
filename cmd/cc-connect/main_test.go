@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -192,6 +194,15 @@ func TestBuildAgentOptionsInjectsProjectScope(t *testing.T) {
 }
 
 func TestBuildAgentOptionsInjectsLarkCLICredentials(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/open-apis/auth/v3/tenant_access_token/internal" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"tenant_access_token":"tenant-token"}`))
+	}))
+	defer tokenServer.Close()
+
 	proj := config.ProjectConfig{
 		Name: "demo-project",
 		Agent: config.AgentConfig{
@@ -214,6 +225,7 @@ func TestBuildAgentOptionsInjectsLarkCLICredentials(t *testing.T) {
 				Options: map[string]any{
 					"app_id":     "cli_test_app",
 					"app_secret": "sec_test_secret",
+					"domain":     tokenServer.URL,
 				},
 			},
 		},
@@ -235,6 +247,9 @@ func TestBuildAgentOptionsInjectsLarkCLICredentials(t *testing.T) {
 	}
 	if env["LARKSUITE_CLI_DEFAULT_AS"] != "bot" {
 		t.Fatalf("LARKSUITE_CLI_DEFAULT_AS = %q", env["LARKSUITE_CLI_DEFAULT_AS"])
+	}
+	if env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"] != "tenant-token" {
+		t.Fatalf("LARKSUITE_CLI_TENANT_ACCESS_TOKEN = %q", env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"])
 	}
 	origEnv := proj.Agent.Options["env"].(map[string]any)
 	if _, exists := origEnv["LARKSUITE_CLI_APP_ID"]; exists {

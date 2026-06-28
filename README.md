@@ -70,16 +70,18 @@ must be disabled.
 
 `inject_lark_cli_credentials` defaults to `true`. For Feishu/Lark projects,
 cc-connect passes `LARKSUITE_CLI_APP_ID`, `LARKSUITE_CLI_APP_SECRET`, and
-`LARKSUITE_CLI_DEFAULT_AS=bot` to the agent subprocess so `lark-cli` commands
-run as the same bot that received the message. Set
-`inject_lark_cli_credentials = false` only when a project must use the active
-local `lark-cli` profile instead.
+`LARKSUITE_CLI_DEFAULT_AS=bot` to the agent subprocess. When a tenant access
+token can be fetched, cc-connect also passes
+`LARKSUITE_CLI_TENANT_ACCESS_TOKEN` so `lark-cli` bot commands run as the same
+bot that received the message. Set `inject_lark_cli_credentials = false` only
+when a project must use the active local `lark-cli` profile instead.
 
 When you need to force a user-profile `lark-cli` command inside an injected
 agent environment, unset the injected app credentials for that command:
 
 ```bash
 env -u LARKSUITE_CLI_APP_ID -u LARKSUITE_CLI_APP_SECRET \
+  -u LARKSUITE_CLI_TENANT_ACCESS_TOKEN \
   lark-cli --profile <profile> --as user <command>
 ```
 

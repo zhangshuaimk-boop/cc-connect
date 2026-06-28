@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -1848,6 +1851,11 @@ func injectLarkCLICredentials(opts map[string]any, proj config.ProjectConfig) {
 	env["LARKSUITE_CLI_APP_ID"] = appID
 	env["LARKSUITE_CLI_APP_SECRET"] = appSecret
 	env["LARKSUITE_CLI_DEFAULT_AS"] = "bot"
+	if token, err := fetchLarkCLITenantAccessToken(proj.Platforms, appID, appSecret); err != nil {
+		slog.Warn("lark-cli credential injection: tenant token fetch failed", "project", proj.Name, "error", err)
+	} else if token != "" {
+		env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"] = token
+	}
 	opts["env"] = env
 }
 
@@ -1864,6 +1872,67 @@ func firstFeishuAppCredentials(platforms []config.PlatformConfig) (string, strin
 		}
 	}
 	return "", "", false
+}
+
+func fetchLarkCLITenantAccessToken(platforms []config.PlatformConfig, appID, appSecret string) (string, error) {
+	if appID == "" || appSecret == "" {
+		return "", nil
+	}
+	domain := larkCLIOpenBaseURL(platforms, appID)
+	body, err := json.Marshal(map[string]string{
+		"app_id":     appID,
+		"app_secret": appSecret,
+	})
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(domain, "/")+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		Code              int    `json:"code"`
+		Msg               string `json:"msg"`
+		TenantAccessToken string `json:"tenant_access_token"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", err
+	}
+	if parsed.Code != 0 {
+		return "", fmt.Errorf("code=%d msg=%s", parsed.Code, parsed.Msg)
+	}
+	if strings.TrimSpace(parsed.TenantAccessToken) == "" {
+		return "", fmt.Errorf("empty tenant_access_token")
+	}
+	return parsed.TenantAccessToken, nil
+}
+
+func larkCLIOpenBaseURL(platforms []config.PlatformConfig, appID string) string {
+	for _, platform := range platforms {
+		app := optionString(platform.Options, "app_id")
+		if app != appID {
+			continue
+		}
+		if domain := optionString(platform.Options, "domain"); domain != "" {
+			return domain
+		}
+		if strings.EqualFold(strings.TrimSpace(platform.Type), "lark") {
+			return "https://open.larksuite.com"
+		}
+	}
+	return "https://open.feishu.cn"
 }
 
 func optionString(opts map[string]any, key string) string {
