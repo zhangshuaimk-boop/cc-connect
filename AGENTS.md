@@ -32,7 +32,7 @@ core            -> standard library and shared dependencies only
 3. Do not implement new requirements directly on `develop`; create a worktree branch from `develop` for each requirement.
 4. After creating a worktree, run `tools/worktree-setup.sh <worktree-path>` from this repository before tests or builds. This installs web dependencies and builds `web/dist` for Go embed tests.
 5. After a worktree branch is complete, merge it back into `develop` and push `develop` to origin.
-6. Do not implement requirements on `dev` or modify `dev` directly.
+6. Do not create alternate long-lived development branches; use `develop` as the only development integration branch.
 
 ## Key Interfaces
 
@@ -45,7 +45,7 @@ core            -> standard library and shared dependencies only
 ## Common Commands
 
 ```bash
-tools/worktree-setup.sh /Users/bytedance/code/cc-connect-worktrees/<name>
+tools/worktree-setup.sh ../cc-connect-<short-desc>
 go test ./...
 go test ./config ./core ./platform/feishu
 go test ./tests/e2e/... -tags=regression

@@ -31,7 +31,9 @@ if [[ "$module" != "github.com/chenhg5/cc-connect" ]]; then
   exit 1
 fi
 
-if [[ "$root" == "/Users/bytedance/code/cc-connect" && "${CC_ALLOW_MAIN_CHECKOUT:-}" != "1" ]]; then
+git_dir="$(git -C "$root" rev-parse --git-dir)"
+git_common_dir="$(git -C "$root" rev-parse --git-common-dir)"
+if [[ "$(cd "$root" && realpath "$git_dir")" == "$(cd "$root" && realpath "$git_common_dir")" && "${CC_ALLOW_MAIN_CHECKOUT:-}" != "1" ]]; then
   echo "ERROR: refusing to initialize the main checkout as a worktree: $root" >&2
   echo "Set CC_ALLOW_MAIN_CHECKOUT=1 only for an intentional main-checkout run." >&2
   exit 1
