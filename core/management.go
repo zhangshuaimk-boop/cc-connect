@@ -19,17 +19,18 @@ import (
 // ProjectSettingsUpdate is passed to SetSaveProjectSettings to persist management API PATCH fields.
 // The implementation (typically in cmd/cc-connect) maps this to config.ProjectSettingsUpdate.
 type ProjectSettingsUpdate struct {
-	Language             *string
-	AdminFrom            *string
-	DisabledCommands     []string
-	WorkDir              *string
-	Mode                 *string
-	AgentType            *string
-	ShowContextIndicator *bool
-	ShowWorkdirIndicator *bool
-	ReplyFooter          *bool
-	InjectSender         *bool
-	PlatformAllowFrom    map[string]string
+	Language                 *string
+	AdminFrom                *string
+	DisabledCommands         []string
+	WorkDir                  *string
+	Mode                     *string
+	AgentType                *string
+	ShowContextIndicator     *bool
+	ShowWorkdirIndicator     *bool
+	ReplyFooter              *bool
+	InjectSender             *bool
+	InjectLarkCLICredentials *bool
+	PlatformAllowFrom        map[string]string
 }
 
 // ManagementServer provides an HTTP REST API for external management tools
@@ -702,17 +703,18 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 
 	if r.Method == http.MethodPatch {
 		var body struct {
-			Language             *string           `json:"language"`
-			AdminFrom            *string           `json:"admin_from"`
-			DisabledCommands     []string          `json:"disabled_commands"`
-			WorkDir              *string           `json:"work_dir"`
-			Mode                 *string           `json:"mode"`
-			AgentType            *string           `json:"agent_type"`
-			ShowContextIndicator *bool             `json:"show_context_indicator"`
-			ShowWorkdirIndicator *bool             `json:"show_workdir_indicator"`
-			ReplyFooter          *bool             `json:"reply_footer"`
-			InjectSender         *bool             `json:"inject_sender"`
-			PlatformAllowFrom    map[string]string `json:"platform_allow_from"`
+			Language                 *string           `json:"language"`
+			AdminFrom                *string           `json:"admin_from"`
+			DisabledCommands         []string          `json:"disabled_commands"`
+			WorkDir                  *string           `json:"work_dir"`
+			Mode                     *string           `json:"mode"`
+			AgentType                *string           `json:"agent_type"`
+			ShowContextIndicator     *bool             `json:"show_context_indicator"`
+			ShowWorkdirIndicator     *bool             `json:"show_workdir_indicator"`
+			ReplyFooter              *bool             `json:"reply_footer"`
+			InjectSender             *bool             `json:"inject_sender"`
+			InjectLarkCLICredentials *bool             `json:"inject_lark_cli_credentials"`
+			PlatformAllowFrom        map[string]string `json:"platform_allow_from"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -781,17 +783,18 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 
 		if m.saveProjectSettings != nil {
 			patch := ProjectSettingsUpdate{
-				Language:             body.Language,
-				AdminFrom:            body.AdminFrom,
-				DisabledCommands:     body.DisabledCommands,
-				WorkDir:              body.WorkDir,
-				Mode:                 body.Mode,
-				AgentType:            body.AgentType,
-				ShowContextIndicator: body.ShowContextIndicator,
-				ShowWorkdirIndicator: body.ShowWorkdirIndicator,
-				ReplyFooter:          body.ReplyFooter,
-				InjectSender:         body.InjectSender,
-				PlatformAllowFrom:    body.PlatformAllowFrom,
+				Language:                 body.Language,
+				AdminFrom:                body.AdminFrom,
+				DisabledCommands:         body.DisabledCommands,
+				WorkDir:                  body.WorkDir,
+				Mode:                     body.Mode,
+				AgentType:                body.AgentType,
+				ShowContextIndicator:     body.ShowContextIndicator,
+				ShowWorkdirIndicator:     body.ShowWorkdirIndicator,
+				ReplyFooter:              body.ReplyFooter,
+				InjectSender:             body.InjectSender,
+				InjectLarkCLICredentials: body.InjectLarkCLICredentials,
+				PlatformAllowFrom:        body.PlatformAllowFrom,
 			}
 			if err := m.saveProjectSettings(name, patch); err != nil {
 				slog.Warn("management: failed to persist project settings", "project", name, "error", err)

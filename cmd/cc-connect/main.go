@@ -1145,17 +1145,18 @@ func main() {
 		mgmtSrv.SetRemoveProject(config.RemoveProject)
 		mgmtSrv.SetSaveProjectSettings(func(name string, u core.ProjectSettingsUpdate) error {
 			return config.SaveProjectSettings(name, config.ProjectSettingsUpdate{
-				Language:             u.Language,
-				AdminFrom:            u.AdminFrom,
-				DisabledCommands:     u.DisabledCommands,
-				WorkDir:              u.WorkDir,
-				Mode:                 u.Mode,
-				AgentType:            u.AgentType,
-				ShowContextIndicator: u.ShowContextIndicator,
-				ShowWorkdirIndicator: u.ShowWorkdirIndicator,
-				ReplyFooter:          u.ReplyFooter,
-				InjectSender:         u.InjectSender,
-				PlatformAllowFrom:    u.PlatformAllowFrom,
+				Language:                 u.Language,
+				AdminFrom:                u.AdminFrom,
+				DisabledCommands:         u.DisabledCommands,
+				WorkDir:                  u.WorkDir,
+				Mode:                     u.Mode,
+				AgentType:                u.AgentType,
+				ShowContextIndicator:     u.ShowContextIndicator,
+				ShowWorkdirIndicator:     u.ShowWorkdirIndicator,
+				ReplyFooter:              u.ReplyFooter,
+				InjectSender:             u.InjectSender,
+				InjectLarkCLICredentials: u.InjectLarkCLICredentials,
+				PlatformAllowFrom:        u.PlatformAllowFrom,
 			})
 		})
 		mgmtSrv.SetGetProjectConfig(config.GetProjectConfigDetails)
@@ -1829,9 +1830,73 @@ func buildAgentOptions(dataDir string, proj config.ProjectConfig) map[string]any
 	for k, v := range proj.Agent.Options {
 		opts[k] = v
 	}
+	injectLarkCLICredentials(opts, proj)
 	opts["cc_data_dir"] = dataDir
 	opts["cc_project"] = proj.Name
 	return opts
+}
+
+func injectLarkCLICredentials(opts map[string]any, proj config.ProjectConfig) {
+	if proj.InjectLarkCLICredentials != nil && !*proj.InjectLarkCLICredentials {
+		return
+	}
+	appID, appSecret, ok := firstFeishuAppCredentials(proj.Platforms)
+	if !ok {
+		return
+	}
+	env := agentEnvMap(opts["env"])
+	env["LARKSUITE_CLI_APP_ID"] = appID
+	env["LARKSUITE_CLI_APP_SECRET"] = appSecret
+	env["LARKSUITE_CLI_DEFAULT_AS"] = "bot"
+	opts["env"] = env
+}
+
+func firstFeishuAppCredentials(platforms []config.PlatformConfig) (string, string, bool) {
+	for _, platform := range platforms {
+		typ := strings.ToLower(strings.TrimSpace(platform.Type))
+		if typ != "feishu" && typ != "lark" {
+			continue
+		}
+		appID := optionString(platform.Options, "app_id")
+		appSecret := optionString(platform.Options, "app_secret")
+		if appID != "" && appSecret != "" {
+			return appID, appSecret, true
+		}
+	}
+	return "", "", false
+}
+
+func optionString(opts map[string]any, key string) string {
+	if opts == nil {
+		return ""
+	}
+	switch v := opts[key].(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return ""
+	}
+}
+
+func agentEnvMap(raw any) map[string]string {
+	switch m := raw.(type) {
+	case map[string]string:
+		out := make(map[string]string, len(m)+3)
+		for k, v := range m {
+			out[k] = v
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]string, len(m)+3)
+		for k, v := range m {
+			if s, ok := v.(string); ok {
+				out[k] = s
+			}
+		}
+		return out
+	default:
+		return make(map[string]string, 3)
+	}
 }
 
 func wireAgentProviders(agent core.Agent, agentCfg config.AgentConfig) providerWiringResult {

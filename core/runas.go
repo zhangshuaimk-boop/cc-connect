@@ -98,9 +98,13 @@ const RunAsChdirEnv = "CC_RUNAS_CHDIR"
 //     PATH. If the target user needs specific binaries on PATH, put
 //     them in the system PATH (e.g. /usr/local/bin symlinks) or in
 //     the target user's own shell profile.
-//   - anything secret
+//   - anything secret except the project-scoped lark-cli credentials below,
+//     which must follow the agent subprocess for Feishu/Lark bot identity.
 var DefaultEnvAllowlist = []string{
 	"LANG",
+	"LARKSUITE_CLI_APP_ID",
+	"LARKSUITE_CLI_APP_SECRET",
+	"LARKSUITE_CLI_DEFAULT_AS",
 	"LC_ALL",
 	"LC_CTYPE",
 	"LC_MESSAGES",

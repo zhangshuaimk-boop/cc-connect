@@ -191,6 +191,115 @@ func TestBuildAgentOptionsInjectsProjectScope(t *testing.T) {
 	}
 }
 
+func TestBuildAgentOptionsInjectsLarkCLICredentials(t *testing.T) {
+	proj := config.ProjectConfig{
+		Name: "demo-project",
+		Agent: config.AgentConfig{
+			Options: map[string]any{
+				"env": map[string]any{
+					"EXISTING": "kept",
+				},
+			},
+		},
+		Platforms: []config.PlatformConfig{
+			{
+				Type: "external-placeholder",
+				Options: map[string]any{
+					"app_id":     "ignore",
+					"app_secret": "ignore",
+				},
+			},
+			{
+				Type: "Feishu",
+				Options: map[string]any{
+					"app_id":     "cli_test_app",
+					"app_secret": "sec_test_secret",
+				},
+			},
+		},
+	}
+
+	got := buildAgentOptions("/tmp/data", proj)
+	env, ok := got["env"].(map[string]string)
+	if !ok {
+		t.Fatalf("env type = %T, want map[string]string", got["env"])
+	}
+	if env["EXISTING"] != "kept" {
+		t.Fatalf("existing env lost: %v", env)
+	}
+	if env["LARKSUITE_CLI_APP_ID"] != "cli_test_app" {
+		t.Fatalf("LARKSUITE_CLI_APP_ID = %q", env["LARKSUITE_CLI_APP_ID"])
+	}
+	if env["LARKSUITE_CLI_APP_SECRET"] != "sec_test_secret" {
+		t.Fatalf("LARKSUITE_CLI_APP_SECRET = %q", env["LARKSUITE_CLI_APP_SECRET"])
+	}
+	if env["LARKSUITE_CLI_DEFAULT_AS"] != "bot" {
+		t.Fatalf("LARKSUITE_CLI_DEFAULT_AS = %q", env["LARKSUITE_CLI_DEFAULT_AS"])
+	}
+	origEnv := proj.Agent.Options["env"].(map[string]any)
+	if _, exists := origEnv["LARKSUITE_CLI_APP_ID"]; exists {
+		t.Fatalf("project agent env mutated: %v", origEnv)
+	}
+}
+
+func TestBuildAgentOptionsCanDisableLarkCLICredentials(t *testing.T) {
+	disabled := false
+	proj := config.ProjectConfig{
+		Name:                     "demo-project",
+		InjectLarkCLICredentials: &disabled,
+		Agent: config.AgentConfig{
+			Options: map[string]any{
+				"env": map[string]string{"EXISTING": "kept"},
+			},
+		},
+		Platforms: []config.PlatformConfig{
+			{
+				Type: "lark",
+				Options: map[string]any{
+					"app_id":     "cli_test_app",
+					"app_secret": "sec_test_secret",
+				},
+			},
+		},
+	}
+
+	got := buildAgentOptions("/tmp/data", proj)
+	env, ok := got["env"].(map[string]string)
+	if !ok {
+		t.Fatalf("env type = %T, want map[string]string", got["env"])
+	}
+	if env["EXISTING"] != "kept" {
+		t.Fatalf("existing env lost: %v", env)
+	}
+	if _, exists := env["LARKSUITE_CLI_APP_ID"]; exists {
+		t.Fatalf("lark-cli env injected despite opt-out: %v", env)
+	}
+}
+
+func TestFirstFeishuAppCredentialsSkipsIncompletePlatforms(t *testing.T) {
+	appID, appSecret, ok := firstFeishuAppCredentials([]config.PlatformConfig{
+		{
+			Type: "feishu",
+			Options: map[string]any{
+				"app_id": "cli_missing_secret",
+			},
+		},
+		{
+			Type: "lark",
+			Options: map[string]any{
+				"app_id":     " cli_lark_app ",
+				"app_secret": " sec_lark_secret ",
+			},
+		},
+	})
+	if !ok {
+		t.Fatal("expected lark credentials to be found")
+	}
+	if appID != "cli_lark_app" || appSecret != "sec_lark_secret" {
+		t.Fatalf("credentials = (%q, %q), want trimmed lark credentials", appID, appSecret)
+	}
+}
+
 func TestWireAgentProvidersStartsRefreshAfterProviderWiring(t *testing.T) {
 	agent := &stubProviderRefreshAgent{activateOK: true}
 	proj := config.ProjectConfig{

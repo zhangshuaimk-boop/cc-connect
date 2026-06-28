@@ -81,6 +81,7 @@ name = "example"
 # mode = "single" # single or multi-workspace
 # reset_on_idle_mins = 30
 # inject_sender = true # default true; set false to stop prepending [cc-connect sender_id=...] to prompts
+# inject_lark_cli_credentials = true # default true; set false to keep lark-cli on its active profile
 # admin_from = "*"
 # filter_external_sessions = false
 

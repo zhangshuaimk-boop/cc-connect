@@ -50,7 +50,7 @@ func TestBuildSpawnCommand_RunAsUser(t *testing.T) {
 	// Allowlist must include both defaults and the extensions, sorted+deduped.
 	preserveList := strings.TrimPrefix(cmd.Args[4], "--preserve-env=")
 	preserved := strings.Split(preserveList, ",")
-	for _, needed := range []string{"LANG", "LC_ALL", "TERM", "PGSSLROOTCERT", "PGSSLMODE"} {
+	for _, needed := range []string{"LANG", "LC_ALL", "TERM", "PGSSLROOTCERT", "PGSSLMODE", "LARKSUITE_CLI_APP_ID", "LARKSUITE_CLI_APP_SECRET", "LARKSUITE_CLI_DEFAULT_AS"} {
 		if !slices.Contains(preserved, needed) {
 			t.Errorf("preserve-env missing %q; got %v", needed, preserved)
 		}
@@ -139,6 +139,9 @@ func TestFilterEnvForSpawn_RunAsUser(t *testing.T) {
 	env := []string{
 		"PATH=/usr/bin",
 		"LANG=en_US.UTF-8",
+		"LARKSUITE_CLI_APP_ID=cli_test",
+		"LARKSUITE_CLI_APP_SECRET=sec_test",
+		"LARKSUITE_CLI_DEFAULT_AS=bot",
 		"SECRET=top",
 		"HOME=/home/supervisor",
 		"SUPERVISOR_CREDENTIAL=nope",
@@ -155,6 +158,9 @@ func TestFilterEnvForSpawn_RunAsUser(t *testing.T) {
 	// instead of inheriting the supervisor's PATH.
 	wantKept := map[string]bool{
 		"LANG=en_US.UTF-8":                  true,
+		"LARKSUITE_CLI_APP_ID=cli_test":     true,
+		"LARKSUITE_CLI_APP_SECRET=sec_test": true,
+		"LARKSUITE_CLI_DEFAULT_AS=bot":      true,
 		"PGSSLROOTCERT=/etc/certs/root.crt": true,
 	}
 	for _, e := range got {

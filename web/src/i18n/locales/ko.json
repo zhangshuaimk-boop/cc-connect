@@ -47,6 +47,8 @@
     "replyFooterHint": "답변에 모델/사용량 메타데이터를 추가합니다",
     "injectSender": "발신자 삽입",
     "injectSenderHint": "에이전트에게 전송되는 메시지에 발신자 정보를 앞에 추가합니다",
+    "injectLarkCLICredentials": "lark-cli Bot 연결",
+    "injectLarkCLICredentialsHint": "프로젝트 Bot 자격 증명을 에이전트 하위 프로세스의 lark-cli에 전달합니다",
     "platformAccess": "플랫폼 접근 제어",
     "deleteTitle": "프로젝트 삭제",
     "deleteConfirm": "프로젝트 \"{{name}}\"을(를) 정말 삭제하시겠습니까? 설정 파일에서 제거됩니다.",
