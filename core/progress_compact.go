@@ -228,7 +228,7 @@ type compactProgressWriter struct {
 	lastSent   string
 	maxEntries int
 
-	// Throttle message edits to avoid platform rate limits (e.g. Discord ~5 edits/5s).
+	// Throttle message edits to avoid platform rate limits.
 	minUpdateInterval time.Duration
 	lastUpdateAt      time.Time
 }

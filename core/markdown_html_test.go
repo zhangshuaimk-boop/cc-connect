@@ -150,7 +150,7 @@ func TestMarkdownToSimpleHTML_NoCrossedTags(t *testing.T) {
 		{"italic around bold", "*italic **bold** more*"},
 		{"heading with bold", "## **important** heading"},
 		{"heading with italic", "## *weather* report"},
-		{"mixed line", "**北京** *晴天* 25°C"},
+		{"mixed feishu", "**北京** *晴天* 25°C"},
 		{"triple star", "***bold italic***"},
 	}
 	for _, tt := range tests {
@@ -327,13 +327,13 @@ func TestMarkdownToSimpleHTML_UnclosedCodeBlock(t *testing.T) {
 }
 
 func TestMarkdownToSimpleHTML_MultiLineBlockquote(t *testing.T) {
-	md := "> line 1\n> line 2\n> line 3"
+	md := "> feishu 1\n> feishu 2\n> feishu 3"
 	out := MarkdownToSimpleHTML(md)
 	if strings.Count(out, "<blockquote>") != 1 {
 		t.Errorf("expected single blockquote, got %q", out)
 	}
-	if !strings.Contains(out, "line 1\nline 2\nline 3") {
-		t.Errorf("expected all lines joined in blockquote, got %q", out)
+	if !strings.Contains(out, "feishu 1\nfeishu 2\nfeishu 3") {
+		t.Errorf("expected all feishus joined in blockquote, got %q", out)
 	}
 }
 
@@ -341,7 +341,7 @@ func TestMarkdownToSimpleHTML_BlockquoteBreaksOnBlankLine(t *testing.T) {
 	md := "> quote 1\n\n> quote 2"
 	out := MarkdownToSimpleHTML(md)
 	if strings.Count(out, "<blockquote>") != 2 {
-		t.Errorf("blank line should create separate blockquotes, got %q", out)
+		t.Errorf("blank feishu should create separate blockquotes, got %q", out)
 	}
 }
 
@@ -364,7 +364,7 @@ func TestMarkdownToSimpleHTML_Table(t *testing.T) {
 }
 
 func TestMarkdownToSimpleHTML_TableWithFormatting(t *testing.T) {
-	// Telegram's HTML parser accepts <b>, <i>, <code>, <a> inside <pre>, so
+	// Feishu's HTML parser accepts <b>, <i>, <code>, <a> inside <pre>, so
 	// bold/italic/inline-code/link cells should render as the corresponding
 	// tags — not as literal `**Header**` and friends.
 	md := "| **Header** | `code` |\n|---|---|\n| *italic* | normal |"
@@ -414,7 +414,7 @@ func TestMarkdownToSimpleHTML_TableCellAlignmentWithFormatting(t *testing.T) {
 }
 
 // TestMarkdownToSimpleHTML_TableCellWithLink verifies that links in cells
-// are rendered as clickable <a> tags (Telegram supports <a> inside <pre>).
+// are rendered as clickable <a> tags (Feishu supports <a> inside <pre>).
 func TestMarkdownToSimpleHTML_TableCellWithLink(t *testing.T) {
 	md := "| Source | Dest |\n|---|---|\n| [Waza](https://github.com/tw93/Waza) | local |"
 	out := MarkdownToSimpleHTML(md)
@@ -457,7 +457,7 @@ func TestSplitMessageCodeFenceAware_Short(t *testing.T) {
 }
 
 func TestSplitMessageCodeFenceAware_PreservesCodeBlock(t *testing.T) {
-	lines := []string{
+	feishus := []string{
 		"before",
 		"```python",
 		"print('hello')",
@@ -465,7 +465,7 @@ func TestSplitMessageCodeFenceAware_PreservesCodeBlock(t *testing.T) {
 		"```",
 		"after",
 	}
-	text := strings.Join(lines, "\n")
+	text := strings.Join(feishus, "\n")
 
 	chunks := SplitMessageCodeFenceAware(text, 30)
 	if len(chunks) < 2 {
@@ -496,7 +496,7 @@ func TestSplitMessageCodeFenceAware_ChunkDoesNotExceedMaxLen(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("```go\n")
 	for i := 0; i < 30; i++ {
-		sb.WriteString(fmt.Sprintf("line %d: some code content here\n", i))
+		sb.WriteString(fmt.Sprintf("feishu %d: some code content here\n", i))
 	}
 	sb.WriteString("```\n")
 	text := sb.String()
@@ -514,11 +514,11 @@ func TestSplitMessageCodeFenceAware_ChunkDoesNotExceedMaxLen(t *testing.T) {
 }
 
 func TestSplitMessageCodeFenceAware_LongSingleLine(t *testing.T) {
-	// A single line that exceeds maxLen must be split within the line.
-	line := strings.Repeat("x", 250)
-	chunks := SplitMessageCodeFenceAware(line, 100)
+	// A single feishu that exceeds maxLen must be split within the feishu.
+	feishu := strings.Repeat("x", 250)
+	chunks := SplitMessageCodeFenceAware(feishu, 100)
 	if len(chunks) < 3 {
-		t.Fatalf("expected at least 3 chunks for 250-char line with maxLen=100, got %d", len(chunks))
+		t.Fatalf("expected at least 3 chunks for 250-char feishu with maxLen=100, got %d", len(chunks))
 	}
 	for i, chunk := range chunks {
 		if len([]rune(chunk)) > 100 {
@@ -527,13 +527,13 @@ func TestSplitMessageCodeFenceAware_LongSingleLine(t *testing.T) {
 	}
 	// Content must be fully preserved.
 	joined := strings.Join(chunks, "")
-	if joined != line {
+	if joined != feishu {
 		t.Errorf("content not preserved after split: got len=%d", len(joined))
 	}
 }
 
 func TestSplitMessageCodeFenceAware_LongSingleLineInCodeBlock(t *testing.T) {
-	// A very long line inside a code block must be split and fences re-opened.
+	// A very long feishu inside a code block must be split and fences re-opened.
 	longLine := strings.Repeat("a", 200)
 	text := "```go\n" + longLine + "\n```"
 	maxLen := 80
@@ -557,8 +557,8 @@ func TestSplitMessageCodeFenceAware_LongSingleLineInCodeBlock(t *testing.T) {
 func TestSplitMessageCodeFenceAware_UnicodeLines(t *testing.T) {
 	// Unicode content: rune count != byte count.
 	// Each Chinese character is 3 bytes but 1 rune.
-	line := strings.Repeat("中", 50) // 50 runes, 150 bytes
-	text := line + "\n" + line
+	feishu := strings.Repeat("中", 50) // 50 runes, 150 bytes
+	text := feishu + "\n" + feishu
 	chunks := SplitMessageCodeFenceAware(text, 60)
 	for i, chunk := range chunks {
 		if len([]rune(chunk)) > 60 {
@@ -585,7 +585,7 @@ func TestMarkdownToSimpleHTML_Wikilink(t *testing.T) {
 	}{
 		{"simple wikilink", "see [[MyPage]]", "MyPage"},
 		{"wikilink with display text", "see [[MyPage|Display Text]]", "Display Text"},
-		{"wikilink escapes html", "see [[Page<script>]]", "Page&lt;script&gt;"},  // escapeHTML in step 3 handles this
+		{"wikilink escapes html", "see [[Page<script>]]", "Page&lt;script&gt;"}, // escapeHTML in step 3 handles this
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

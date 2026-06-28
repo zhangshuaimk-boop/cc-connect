@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -250,9 +251,9 @@ func TestHandleMessage_MixedDeltaAndNonDelta(t *testing.T) {
 		"content": "Let me look at the files.",
 	})
 	gs.handleEvent(map[string]any{
-		"type":      "tool_use",
-		"tool_name": "shell",
-		"tool_id":   "t1",
+		"type":       "tool_use",
+		"tool_name":  "shell",
+		"tool_id":    "t1",
 		"parameters": map[string]any{"command": "ls"},
 	})
 	gs.handleEvent(map[string]any{
@@ -330,6 +331,116 @@ func TestHandleInit_StoresSessionID(t *testing.T) {
 	events := drainEvents(gs.events, 50*time.Millisecond)
 	if len(events) != 1 || events[0].Type != core.EventText {
 		t.Errorf("expected 1 EventText from init, got %v", events)
+	}
+}
+
+func TestStartSessionFakeCLI_MergesEnvArgsAndStdinPrompt(t *testing.T) {
+	tmp := t.TempDir()
+	capturePath := filepath.Join(tmp, "capture.txt")
+	cliPath := writeGeminiFakeCLI(t, capturePath)
+
+	a := &Agent{
+		workDir:      tmp,
+		model:        "fallback-model",
+		mode:         "auto_edit",
+		cmd:          cliPath,
+		cliExtraArgs: []string{"--wrapped"},
+		configEnv:    []string{"CONFIG_FLAG=from-config"},
+		providers: []core.ProviderConfig{{
+			Name:   "google",
+			APIKey: "provider-key",
+			Model:  "provider-model",
+			Env:    map[string]string{"PROVIDER_FLAG": "from-provider"},
+		}},
+		activeIdx: 0,
+	}
+	a.SetSessionEnv([]string{"SESSION_FLAG=from-session"})
+
+	session, err := a.StartSession(context.Background(), "sid-1")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	if err := session.Send("hello\nworld", nil, nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	events := readEventsUntilGeminiResult(t, session.Events(), capturePath)
+	if !containsEventType(events, core.EventText) || !containsEventType(events, core.EventResult) {
+		t.Fatalf("expected text and result events, got %#v", events)
+	}
+
+	_ = waitForGeminiFileContents(t, capturePath,
+		"args=--wrapped --output-format stream-json --approval-mode auto_edit --resume sid-1 -m provider-model -p -",
+		"stdin=hello|world",
+		"GEMINI_API_KEY=provider-key",
+		"CONFIG_FLAG=from-config",
+		"PROVIDER_FLAG=from-provider",
+		"SESSION_FLAG=from-session",
+	)
+}
+
+func TestListAndDeleteGeminiSessions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(t.TempDir(), "Gem Project")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll workDir: %v", err)
+	}
+	chatsDir := filepath.Join(home, ".gemini", "tmp", "gem-slug", "chats")
+	if err := os.MkdirAll(chatsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll chatsDir: %v", err)
+	}
+	registry := fmt.Sprintf(`{"projects":{%q:"gem-slug"}}`, filepath.Clean(workDir))
+	if err := os.WriteFile(filepath.Join(home, ".gemini", "projects.json"), []byte(registry), 0o644); err != nil {
+		t.Fatalf("WriteFile registry: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	sessionPath := filepath.Join(chatsDir, "session-1.json")
+	sessionJSON := fmt.Sprintf(`{
+		"sessionId":"sid-1",
+		"projectHash":"gem-slug",
+		"startTime":%q,
+		"lastUpdated":%q,
+		"messages":[
+			{"type":"user","content":[{"text":"first user line\nsecond line"}]},
+			{"type":"assistant","content":"reply"}
+		]
+	}`, now.Add(-time.Minute).Format(time.RFC3339), now.Format(time.RFC3339))
+	if err := os.WriteFile(sessionPath, []byte(sessionJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chatsDir, "subagent.json"), []byte(`{"sessionId":"skip","kind":"subagent","messages":[{"type":"user","content":"skip"}]}`), 0o644); err != nil {
+		t.Fatalf("WriteFile subagent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chatsDir, "nouser.json"), []byte(`{"sessionId":"skip2","messages":[{"type":"assistant","content":"reply"}]}`), 0o644); err != nil {
+		t.Fatalf("WriteFile nouser: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chatsDir, "bad.json"), []byte(`not-json`), 0o644); err != nil {
+		t.Fatalf("WriteFile bad: %v", err)
+	}
+
+	a := &Agent{workDir: workDir}
+	sessions, err := a.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("ListSessions() len = %d, want 1: %#v", len(sessions), sessions)
+	}
+	if got := sessions[0]; got.ID != "sid-1" || got.Summary != "first user line" || got.MessageCount != 2 {
+		t.Fatalf("session info = %#v, want sid-1 summary and 2 messages", got)
+	}
+
+	if err := a.DeleteSession(context.Background(), "sid-1"); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("session file still exists after DeleteSession: %v", err)
+	}
+	if err := a.DeleteSession(context.Background(), "missing"); err == nil {
+		t.Fatal("DeleteSession(missing) returned nil, want error")
 	}
 }
 
@@ -445,10 +556,10 @@ func TestSessionMessage_TextContent(t *testing.T) {
 
 func TestComputeLineDiff(t *testing.T) {
 	tests := []struct {
-		name     string
-		old      string
-		new_     string
-		want     string
+		name string
+		old  string
+		new_ string
+		want string
 	}{
 		{
 			"single line fully different",
@@ -506,4 +617,101 @@ func TestGeminiSession_ContinueSessionTreatedAsFresh(t *testing.T) {
 	if got := s.CurrentSessionID(); got != "" {
 		t.Errorf("ContinueSession should be treated as fresh: chatID = %q, want empty", got)
 	}
+}
+
+func writeGeminiFakeCLI(t *testing.T, capturePath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gemini")
+	script := fmt.Sprintf(`#!/bin/sh
+stdin=$(cat | tr '\n' '|')
+tmp=%q.$$
+trap 'rm -f "$tmp"' EXIT
+{
+  printf 'args=%%s\n' "$*"
+  printf 'stdin=%%s\n' "$stdin"
+  printf 'GEMINI_API_KEY=%%s\n' "$GEMINI_API_KEY"
+  printf 'CONFIG_FLAG=%%s\n' "$CONFIG_FLAG"
+  printf 'PROVIDER_FLAG=%%s\n' "$PROVIDER_FLAG"
+  printf 'SESSION_FLAG=%%s\n' "$SESSION_FLAG"
+} > "$tmp"
+mv "$tmp" %q
+printf '{"type":"init","session_id":"sid-1","model":"provider-model"}\n'
+printf '{"type":"message","role":"assistant","content":"done","delta":true}\n'
+printf '{"type":"result","status":"success"}\n'
+`, capturePath, capturePath)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile fake CLI: %v", err)
+	}
+	return path
+}
+
+func readEventsUntilGeminiResult(t *testing.T, ch <-chan core.Event, capturePath string) []core.Event {
+	t.Helper()
+	var events []core.Event
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				t.Fatalf("events channel closed before result, events=%#v, capture=%s", events, readGeminiFileForFailure(capturePath))
+			}
+			events = append(events, evt)
+			if evt.Type == core.EventResult {
+				return events
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for result, events=%#v, capture=%s", events, readGeminiFileForFailure(capturePath))
+		}
+	}
+}
+
+func containsEventType(events []core.Event, typ core.EventType) bool {
+	for _, evt := range events {
+		if evt.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForGeminiFileContents(t *testing.T, path string, wants ...string) string {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var data []byte
+	var err error
+	for time.Now().Before(deadline) {
+		data, err = os.ReadFile(path)
+		if err == nil {
+			text := string(data)
+			missing := missingGeminiSubstrings(text, wants)
+			if len(missing) == 0 {
+				return text
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	t.Fatalf("capture missing %v:\n%s", missingGeminiSubstrings(string(data), wants), string(data))
+	return ""
+}
+
+func missingGeminiSubstrings(text string, wants []string) []string {
+	var missing []string
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			missing = append(missing, want)
+		}
+	}
+	return missing
+}
+
+func readGeminiFileForFailure(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err.Error()
+	}
+	return string(data)
 }

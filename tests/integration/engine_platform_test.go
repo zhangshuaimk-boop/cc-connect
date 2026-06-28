@@ -222,7 +222,7 @@ func TestIntegration_CommandRegistryIntegration(t *testing.T) {
 
 	// Hyphen/underscore normalization
 	registry.Add("my-cmd", "My command", "Running...", "", "", "builtin")
-	cmd, ok = registry.Resolve("my_cmd") // Telegram sanitizes hyphens to underscores
+	cmd, ok = registry.Resolve("my_cmd") // Feishu sanitizes hyphens to underscores
 	require.True(t, ok)
 	assert.Equal(t, "my-cmd", cmd.Name)
 

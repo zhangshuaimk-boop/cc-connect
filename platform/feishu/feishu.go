@@ -1,7 +1,6 @@
 package feishu
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -142,6 +141,7 @@ type Platform struct {
 	cancel           context.CancelFunc
 	dedup            *core.MessageDedup
 	botOpenID        string
+	botName          string
 	peerBots         map[string]string // app_id -> friendly alias, for quoted-reply attribution
 	userNameCache    sync.Map          // open_id -> display name
 	chatNameCache    sync.Map          // chat_id -> chat name
@@ -185,26 +185,6 @@ type Platform struct {
 	imageBatchWindow time.Duration // quiet period before flushing a batch; 0 means use defaultImageBatchWindow
 }
 
-// defaultImageBatchWindow is the quiet period after the last image in a
-// session before the buffered batch is dispatched as a single multi-image
-// message. 500ms covers real-world mobile sending intervals (we've observed
-// ~330ms between consecutive sends from the Feishu mobile client when a user
-// taps "send" repeatedly) while remaining responsive for sequential single
-// image sends. Operators that need a longer or shorter window can override
-// it via the platform option `image_batch_window_ms`.
-const defaultImageBatchWindow = 500 * time.Millisecond
-
-// batchWindow returns the effective image-batch coalesce window for this
-// Platform. Tests and zero-initialised Platforms fall back to the default so
-// they never schedule a zero-duration timer (which would fire immediately and
-// defeat batching).
-func (p *Platform) batchWindow() time.Duration {
-	if p.imageBatchWindow > 0 {
-		return p.imageBatchWindow
-	}
-	return defaultImageBatchWindow
-}
-
 // coerceMilliseconds normalises numeric TOML values (which decode as int64 or
 // float64) into an integer millisecond count.
 func coerceMilliseconds(v any) (int64, error) {
@@ -228,25 +208,6 @@ func coerceMilliseconds(v any) (int64, error) {
 	default:
 		return 0, fmt.Errorf("expected number, got %T", v)
 	}
-}
-
-// imageBatchEntry holds image data accumulated for one session while we wait
-// to see if more images are coming. timer is stopped and replaced on every
-// new image to coalesce the window; the pointer is captured by the timer
-// callback so an in-flight (or stale) timer can detect that its entry has
-// been superseded and exit without dispatching.
-type imageBatchEntry struct {
-	sessionKey   string
-	userID       string
-	userName     string
-	chatName     string
-	rctx         replyContext
-	quoted       quotedMessage
-	images       []core.ImageAttachment
-	messageIDs   []string
-	createTimeMs int64
-	parentID     string
-	timer        *time.Timer
 }
 
 // compile-time interface assertions
@@ -444,6 +405,20 @@ func (p *Platform) getBotOpenID() string {
 	return p.botOpenID
 }
 
+func (p *Platform) getBotName() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.botName
+}
+
+func (p *Platform) SelfID() string {
+	return p.getBotOpenID()
+}
+
+func (p *Platform) SelfName() string {
+	return p.getBotName()
+}
+
 func (p *Platform) KeepPreviewOnFinish() bool {
 	return p.useInteractiveCard
 }
@@ -459,13 +434,14 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	// can still receive events and operate correctly. We therefore only attempt
 	// bot open_id discovery eagerly for WebSocket mode.
 	if !p.shouldUseWebhookMode() {
-		if openID, err := p.fetchBotOpenID(); err != nil {
+		if info, err := p.fetchBotInfo(); err != nil {
 			slog.Warn(p.platformName+": failed to get bot open_id, group chat filtering disabled", "error", err)
 		} else {
 			p.mu.Lock()
-			p.botOpenID = openID
+			p.botOpenID = info.openID
+			p.botName = info.name
 			p.mu.Unlock()
-			slog.Info(p.platformName+": bot identified", "open_id", openID)
+			slog.Info(p.platformName+": bot identified", "open_id", info.openID, "name", info.name)
 		}
 	}
 
@@ -1081,135 +1057,6 @@ func (p *Platform) dispatchCoreMessage(msg *core.Message) {
 	h(p.dispatchPlatform(), msg)
 }
 
-// bufferImage adds a freshly-downloaded image to the per-session batch buffer.
-// Consecutive image-only messages from the same session (same chatID + userID
-// + parentID) coalesce into a single multi-image dispatch after imageBatchWindow
-// of quiet time. A context mismatch (different parentID or userID) flushes the
-// existing batch immediately before the new one starts.
-//
-// The timer callback captures the entry pointer; flushImageBatchByRef verifies
-// the entry hasn't been superseded before dispatching, so a stale timer firing
-// after a replace or Stop will be a safe no-op.
-func (p *Platform) bufferImage(sessionKey string, entry *imageBatchEntry) {
-	p.imageBatchMu.Lock()
-	if p.imageBatch == nil {
-		// Lazy-init so tests that construct &Platform{} directly can still
-		// exercise the image path without remembering to allocate the map.
-		p.imageBatch = make(map[string]*imageBatchEntry)
-	}
-
-	// If a batch for this session exists with different context (parentID or
-	// userID), flush it first so we never mix unrelated batches.
-	var toFlush *imageBatchEntry
-	if existing, ok := p.imageBatch[sessionKey]; ok {
-		if existing.parentID != entry.parentID || existing.userID != entry.userID {
-			if existing.timer != nil {
-				existing.timer.Stop()
-			}
-			delete(p.imageBatch, sessionKey)
-			toFlush = existing
-		}
-	}
-
-	if existing, ok := p.imageBatch[sessionKey]; ok {
-		// Append into the existing batch and reset its timer.
-		if existing.timer != nil {
-			existing.timer.Stop()
-		}
-		existing.images = append(existing.images, entry.images...)
-		existing.messageIDs = append(existing.messageIDs, entry.messageIDs...)
-		if entry.createTimeMs > existing.createTimeMs {
-			existing.createTimeMs = entry.createTimeMs
-		}
-		ref := existing
-		existing.timer = time.AfterFunc(p.batchWindow(), func() {
-			p.flushImageBatchByRef(sessionKey, ref)
-		})
-	} else {
-		// Start a fresh batch with its own timer.
-		ref := entry
-		entry.timer = time.AfterFunc(p.batchWindow(), func() {
-			p.flushImageBatchByRef(sessionKey, ref)
-		})
-		p.imageBatch[sessionKey] = entry
-	}
-
-	p.imageBatchMu.Unlock()
-
-	if toFlush != nil {
-		p.dispatchImageBatchEntry(toFlush)
-	}
-}
-
-// flushImageBatchByRef dispatches the batch iff the map still points at the
-// same entry pointer (i.e. the timer wasn't superseded). Called by the
-// AfterFunc timer callback.
-func (p *Platform) flushImageBatchByRef(sessionKey string, ref *imageBatchEntry) {
-	p.imageBatchMu.Lock()
-	current, ok := p.imageBatch[sessionKey]
-	if !ok || current != ref {
-		p.imageBatchMu.Unlock()
-		return
-	}
-	if current.timer != nil {
-		current.timer.Stop()
-	}
-	delete(p.imageBatch, sessionKey)
-	p.imageBatchMu.Unlock()
-
-	p.dispatchImageBatchEntry(current)
-}
-
-// flushImageBatches synchronously dispatches any pending image batches.
-// Intended to be called from Stop() so buffered images aren't lost when
-// cc-connect shuts down.
-func (p *Platform) flushImageBatches() {
-	p.imageBatchMu.Lock()
-	pending := p.imageBatch
-	p.imageBatch = make(map[string]*imageBatchEntry)
-	p.imageBatchMu.Unlock()
-
-	for _, entry := range pending {
-		if entry.timer != nil {
-			entry.timer.Stop()
-		}
-		p.dispatchImageBatchEntry(entry)
-	}
-}
-
-// dispatchImageBatchEntry emits a single core.Message carrying all images
-// that were buffered into this batch entry. The newest create_time is used
-// as UserMessageTimeMs so the merged message preserves the user's intended
-// ordering, and the newest message_id is used as the canonical id.
-func (p *Platform) dispatchImageBatchEntry(entry *imageBatchEntry) {
-	if len(entry.images) == 0 {
-		return
-	}
-	lastIdx := len(entry.messageIDs) - 1
-	canonicalID := entry.messageIDs[lastIdx]
-	for _, mid := range entry.messageIDs {
-		if p.isMessageRecalled(mid) {
-			slog.Debug(p.tag()+": recalled image batch member dropped",
-				"message_id", mid, "batch_size", len(entry.images))
-		}
-	}
-	slog.Info(p.tag()+": dispatched image batch",
-		"session_key", entry.sessionKey,
-		"image_count", len(entry.images),
-		"message_ids", entry.messageIDs,
-	)
-	p.dispatchCoreMessage(&core.Message{
-		SessionKey: entry.sessionKey, Platform: p.platformName,
-		MessageID: canonicalID,
-		UserID:    entry.userID, UserName: entry.userName, ChatName: entry.chatName,
-		Content:           "",
-		ExtraContent:      entry.quoted.text,
-		Images:            append(entry.quoted.images, entry.images...),
-		ReplyCtx:          entry.rctx,
-		UserMessageTimeMs: entry.createTimeMs,
-	})
-}
-
 func (p *Platform) onMessageRecalled(_ context.Context, event *larkim.P2MessageRecalledV1) error {
 	if event == nil || event.Event == nil {
 		return nil
@@ -1247,26 +1094,15 @@ func (p *Platform) onMessageRecalled(_ context.Context, event *larkim.P2MessageR
 }
 
 func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
-	msg := event.Event.Message
-	sender := event.Event.Sender
-
-	msgType := ""
-	if msg.MessageType != nil {
-		msgType = *msg.MessageType
-	}
-
-	chatID := ""
-	if msg.ChatId != nil {
-		chatID = *msg.ChatId
-	}
-	userID := userIDFromEvent(sender.SenderId)
+	in := parseFeishuInboundMessage(event)
+	msg := in.message
+	msgType := in.msgType
+	chatID := in.chatID
+	userID := in.userID
 	// userName and chatName are resolved in dispatchMessage to avoid blocking
 	// the SDK dispatcher goroutine with synchronous HTTP calls.
 
-	messageID := ""
-	if msg.MessageId != nil {
-		messageID = *msg.MessageId
-	}
+	messageID := in.messageID
 
 	if p.isMessageRecalled(messageID) {
 		slog.Debug(p.tag()+": recalled message ignored before dispatch", "message_id", messageID)
@@ -1278,30 +1114,26 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		return nil
 	}
 
-	var createTimeMs int64
-	if msg.CreateTime != nil {
-		if ms, err := strconv.ParseInt(*msg.CreateTime, 10, 64); err == nil {
+	if in.createTime != "" {
+		if in.createTimeMs > 0 {
+			ms := in.createTimeMs
 			msgTime := time.Unix(ms/1000, (ms%1000)*int64(time.Millisecond))
 			if core.IsOldMessage(msgTime) {
-				slog.Debug(p.tag()+": ignoring old message after restart", "create_time", *msg.CreateTime)
+				slog.Debug(p.tag()+": ignoring old message after restart", "create_time", in.createTime)
 				return nil
 			}
-			createTimeMs = ms
 		}
 	}
 
-	chatType := ""
-	if msg.ChatType != nil {
-		chatType = *msg.ChatType
-	}
-	mentionCount := len(msg.Mentions)
+	chatType := in.chatType
+	mentionCount := len(in.mentions)
 	slog.Debug(p.tag()+": inbound message",
 		"message_id", messageID,
 		"chat_id", chatID,
 		"chat_type", chatType,
-		"root_id", stringValue(msg.RootId),
-		"thread_id", stringValue(msg.ThreadId),
-		"parent_id", stringValue(msg.ParentId),
+		"root_id", in.rootID,
+		"thread_id", in.threadID,
+		"parent_id", in.parentID,
 		"mentions", mentionCount,
 		"group_reply_all", p.groupReplyAll,
 		"thread_isolation", p.threadIsolation,
@@ -1311,25 +1143,22 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// thread set; sessionKey is also used downstream for dispatch.
 	sessionKey := p.makeSessionKey(msg, chatID, userID)
 
-	if chatType == "group" && !p.groupReplyAll && p.getBotOpenID() != "" {
-		if !isBotMentioned(msg.Mentions, p.getBotOpenID()) {
-			switch {
-			// Feishu @all sends {"text":"@_all"} with 0 mentions.
-			case p.respondToAtEveryoneAndHere && msg.Content != nil && strings.Contains(*msg.Content, "@_all"):
-				slog.Debug(p.tag()+": responding to @all message", "chat_id", chatID)
-			// Once a thread has been engaged via @bot, allow follow-up
-			// attachment-only messages (image/file/audio) in the same thread
-			// through without re-mentioning the bot. Plain text and rich-text
-			// posts still require an explicit @bot to avoid pulling in
-			// unrelated chatter.
-			case p.threadIsolation && isAttachmentMsgType(msgType) && p.isActiveThreadSession(sessionKey):
-				slog.Debug(p.tag()+": passing attachment through active thread without mention",
-					"chat_id", chatID, "session_key", sessionKey, "msg_type", msgType, "message_id", messageID)
-			default:
-				slog.Debug(p.tag()+": ignoring group message without bot mention", "chat_id", chatID)
-				return nil
-			}
-		}
+	mentionDecision := decideFeishuMention(in, p.getBotOpenID(), p.groupReplyAll, p.respondToAtEveryoneAndHere, p.threadIsolation && p.isActiveThreadSession(sessionKey))
+	if !mentionDecision.allow {
+		slog.Debug(p.tag()+": ignoring group message without bot mention", "chat_id", chatID)
+		return nil
+	}
+	if mentionDecision.atEveryone {
+		slog.Debug(p.tag()+": responding to @all message", "chat_id", chatID)
+	}
+	if mentionDecision.activeThreadAttachment {
+		// Once a thread has been engaged via @bot, allow follow-up
+		// attachment-only messages (image/file/audio) in the same thread
+		// through without re-mentioning the bot. Plain text and rich-text
+		// posts still require an explicit @bot to avoid pulling in
+		// unrelated chatter.
+		slog.Debug(p.tag()+": passing attachment through active thread without mention",
+			"chat_id", chatID, "session_key", sessionKey, "msg_type", msgType, "message_id", messageID)
 	}
 
 	if !core.AllowList(p.allowFrom, userID) {
@@ -1347,24 +1176,17 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		return nil
 	}
 
-	if msg.Content == nil && msgType != "merge_forward" {
+	if !in.hasContent && msgType != "merge_forward" {
 		slog.Debug(p.tag()+": message content is nil", "message_id", messageID, "type", msgType)
 		return nil
 	}
 
 	// Capture content before going async — the SDK may reuse the event object.
-	content := ""
-	if msg.Content != nil {
-		content = *msg.Content
-	}
-	mentions := msg.Mentions
-	parentID := stringValue(msg.ParentId)
-
-	rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
+	dispatch := in.dispatchInput(sessionKey)
 	slog.Debug(p.tag()+": routed inbound message",
 		"message_id", messageID,
 		"session_key", sessionKey,
-		"reply_in_thread", p.shouldReplyInThread(rctx),
+		"reply_in_thread", p.shouldReplyInThread(dispatch.rctx),
 	)
 
 	// Mark this thread as bot-engaged so subsequent attachment-only messages
@@ -1375,7 +1197,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
 	// correctness before spawning the goroutine.
-	go p.dispatchMessage(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs)
+	go p.dispatchMessage(ctx, dispatch.msgType, dispatch.content, dispatch.mentions, dispatch.messageID, dispatch.sessionKey, dispatch.userID, dispatch.chatID, dispatch.rctx, dispatch.parentID, dispatch.createTimeMs)
 
 	return nil
 }
@@ -2671,33 +2493,7 @@ func (p *Platform) SendImage(ctx context.Context, rctx any, img core.ImageAttach
 }
 
 func (p *Platform) uploadImageKey(ctx context.Context, data []byte) (string, error) {
-	var uploadResp *larkim.CreateImageResp
-	if err := p.withTransientRetry(ctx, "upload image", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "upload image", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			req := larkim.NewCreateImageReqBuilder().
-				Body(larkim.NewCreateImageReqBodyBuilder().
-					ImageType("message").
-					Image(bytes.NewReader(data)).
-					Build()).
-				Build()
-			var err error
-			uploadResp, err = client.Im.Image.Create(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: upload image: %w", p.tag(), err)
-			}
-			if !uploadResp.Success() {
-				return fmt.Errorf("%s: upload image code=%d msg=%s", p.tag(), uploadResp.Code, uploadResp.Msg)
-			}
-			return nil
-		})
-	}); err != nil {
-		return "", err
-	}
-	if uploadResp.Data == nil || uploadResp.Data.ImageKey == nil {
-		return "", fmt.Errorf("%s: upload image: no image_key returned", p.tag())
-	}
-
-	return *uploadResp.Data.ImageKey, nil
+	return p.sendAPI().uploadImageKey(ctx, data)
 }
 
 func (p *Platform) SendFile(ctx context.Context, rctx any, file core.FileAttachment) error {
@@ -2711,35 +2507,13 @@ func (p *Platform) SendFile(ctx context.Context, rctx any, file core.FileAttachm
 		fileName = "attachment"
 	}
 	fileType := detectFeishuFileType(file.MimeType, fileName)
-	var uploadResp *larkim.CreateFileResp
-	if err := p.withTransientRetry(ctx, "upload file", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "upload file", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			req := larkim.NewCreateFileReqBuilder().
-				Body(larkim.NewCreateFileReqBodyBuilder().
-					FileType(fileType).
-					FileName(fileName).
-					File(bytes.NewReader(file.Data)).
-					Build()).
-				Build()
-			var err error
-			uploadResp, err = client.Im.File.Create(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: upload file: %w", p.tag(), err)
-			}
-			if !uploadResp.Success() {
-				return fmt.Errorf("%s: upload file code=%d msg=%s", p.tag(), uploadResp.Code, uploadResp.Msg)
-			}
-			return nil
-		})
-	}); err != nil {
+	fileKey, err := p.sendAPI().uploadFileKey(ctx, "upload file", fileType, fileName, file.Data)
+	if err != nil {
 		return err
-	}
-	if uploadResp.Data == nil || uploadResp.Data.FileKey == nil {
-		return fmt.Errorf("%s: upload file: no file_key returned", p.tag())
 	}
 
 	msgType := detectFeishuFileMessageType(fileType)
-	fileContent, err := buildFeishuFileMessageContent(msgType, *uploadResp.Data.FileKey)
+	fileContent, err := buildFeishuFileMessageContent(msgType, fileKey)
 	if err != nil {
 		return fmt.Errorf("%s: build file message: %w", p.tag(), err)
 	}
@@ -2805,24 +2579,9 @@ func buildFeishuFileMessageContent(msgType, fileKey string) (string, error) {
 }
 
 func (p *Platform) downloadImage(messageID, imageKey string) ([]byte, string, error) {
-	resp, err := p.client.Im.MessageResource.Get(context.Background(),
-		larkim.NewGetMessageResourceReqBuilder().
-			MessageId(messageID).
-			FileKey(imageKey).
-			Type("image").
-			Build())
+	data, err := p.sendAPI().downloadMessageResource(context.Background(), messageID, imageKey, "image", "image API")
 	if err != nil {
-		return nil, "", fmt.Errorf("%s: image API: %w", p.tag(), err)
-	}
-	if !resp.Success() {
-		return nil, "", fmt.Errorf("%s: image API code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-	}
-	if resp.File == nil {
-		return nil, "", fmt.Errorf("%s: image API returned nil file body", p.tag())
-	}
-	data, err := io.ReadAll(resp.File)
-	if err != nil {
-		return nil, "", fmt.Errorf("%s: read image: %w", p.tag(), err)
+		return nil, "", err
 	}
 
 	mimeType := detectMimeType(data)
@@ -2831,24 +2590,9 @@ func (p *Platform) downloadImage(messageID, imageKey string) ([]byte, string, er
 }
 
 func (p *Platform) downloadResource(messageID, fileKey, resType string) ([]byte, error) {
-	resp, err := p.client.Im.MessageResource.Get(context.Background(),
-		larkim.NewGetMessageResourceReqBuilder().
-			MessageId(messageID).
-			FileKey(fileKey).
-			Type(resType).
-			Build())
+	data, err := p.sendAPI().downloadMessageResource(context.Background(), messageID, fileKey, resType, "resource API")
 	if err != nil {
-		return nil, fmt.Errorf("%s: resource API: %w", p.tag(), err)
-	}
-	if !resp.Success() {
-		return nil, fmt.Errorf("%s: resource API code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-	}
-	if resp.File == nil {
-		return nil, fmt.Errorf("%s: resource API returned nil file body", p.tag())
-	}
-	data, err := io.ReadAll(resp.File)
-	if err != nil {
-		return nil, fmt.Errorf("%s: read resource: %w", p.tag(), err)
+		return nil, err
 	}
 	slog.Debug(p.tag()+": downloaded resource", "key", fileKey, "type", resType, "size", len(data))
 	return data, nil
@@ -3225,47 +2969,32 @@ func findSingleAsterisk(s string) int {
 	return -1
 }
 
-// fetchBotOpenID retrieves the bot's open_id via the Feishu bot info API.
-func (p *Platform) fetchBotOpenID() (string, error) {
+type botInfo struct {
+	openID string
+	name   string
+}
+
+// fetchBotInfo retrieves the bot's identity via the Feishu bot info API.
+func (p *Platform) fetchBotInfo() (botInfo, error) {
 	resp, err := p.client.Get(context.Background(),
 		"/open-apis/bot/v3/info", nil, larkcore.AccessTokenTypeTenant)
 	if err != nil {
-		return "", fmt.Errorf("api call: %w", err)
+		return botInfo{}, fmt.Errorf("api call: %w", err)
 	}
 	var result struct {
 		Code int `json:"code"`
 		Bot  struct {
-			OpenID string `json:"open_id"`
+			OpenID  string `json:"open_id"`
+			AppName string `json:"app_name"`
 		} `json:"bot"`
 	}
 	if err := json.Unmarshal(resp.RawBody, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
+		return botInfo{}, fmt.Errorf("parse response: %w", err)
 	}
 	if result.Code != 0 {
-		return "", fmt.Errorf("api code=%d", result.Code)
+		return botInfo{}, fmt.Errorf("api code=%d", result.Code)
 	}
-	return result.Bot.OpenID, nil
-}
-
-func isBotMentioned(mentions []*larkim.MentionEvent, botOpenID string) bool {
-	for _, m := range mentions {
-		if m.Id != nil && m.Id.OpenId != nil && *m.Id.OpenId == botOpenID {
-			return true
-		}
-	}
-	return false
-}
-
-// isAttachmentMsgType reports whether a Feishu message type carries only an
-// attachment payload (no free-form text the user could use to address another
-// human). These are the message types we are willing to admit into an
-// already-engaged thread without an explicit @bot mention.
-func isAttachmentMsgType(msgType string) bool {
-	switch msgType {
-	case "image", "file", "audio", "media":
-		return true
-	}
-	return false
+	return botInfo{openID: result.Bot.OpenID, name: result.Bot.AppName}, nil
 }
 
 // markThreadSessionActive records that a thread sessionKey has been engaged
@@ -3288,73 +3017,6 @@ func (p *Platform) isActiveThreadSession(sessionKey string) bool {
 	return ok
 }
 
-// stripMentions processes @mention placeholders (e.g. @_user_1) in text.
-// The bot's own mention is removed; other user mentions are replaced with
-// their display name so the agent can see who was referenced.
-func stripMentions(text string, mentions []*larkim.MentionEvent, botOpenID string) string {
-	if len(mentions) == 0 {
-		return text
-	}
-	for _, m := range mentions {
-		if m.Key == nil {
-			continue
-		}
-		if botOpenID != "" && m.Id != nil && m.Id.OpenId != nil && *m.Id.OpenId == botOpenID {
-			text = strings.ReplaceAll(text, *m.Key, "")
-		} else if m.Name != nil && *m.Name != "" {
-			text = strings.ReplaceAll(text, *m.Key, "@"+*m.Name)
-		} else {
-			text = strings.ReplaceAll(text, *m.Key, "")
-		}
-	}
-	return strings.TrimSpace(text)
-}
-
-// TODO: Session-key derivation and reply-thread behavior are split across multiple code paths here.
-// Should revisit thread/root handling without changing thread_isolation=false behavior.
-func (p *Platform) makeSessionKey(msg *larkim.EventMessage, chatID, userID string) string {
-	if p.threadIsolation && msg != nil && stringValue(msg.ChatType) == "group" {
-		rootID := stringValue(msg.RootId)
-		if rootID == "" {
-			rootID = stringValue(msg.MessageId)
-		}
-		if rootID != "" {
-			return fmt.Sprintf("%s:%s:root:%s", p.tag(), chatID, rootID)
-		}
-	}
-	if p.shareSessionInChannel {
-		return fmt.Sprintf("%s:%s", p.tag(), chatID)
-	}
-	return fmt.Sprintf("%s:%s:%s", p.tag(), chatID, userID)
-}
-
-func (p *Platform) sessionKeyFromCardAction(chatID, userID string, value map[string]any) string {
-	if value != nil {
-		if sessionKey, _ := value["session_key"].(string); sessionKey != "" {
-			return sessionKey
-		}
-	}
-	if p.shareSessionInChannel {
-		return fmt.Sprintf("%s:%s", p.tag(), chatID)
-	}
-	return fmt.Sprintf("%s:%s:%s", p.tag(), chatID, userID)
-}
-
-func (p *Platform) shouldReplyInThread(rc replyContext) bool {
-	if rc.messageID == "" {
-		return false
-	}
-	return p.threadIsolation && isThreadSessionKey(rc.sessionKey)
-}
-
-// shouldUseThreadOrReplyAPI is true when we should call Im.Message.Reply (optionally with ReplyInThread).
-func (p *Platform) shouldUseThreadOrReplyAPI(rc replyContext) bool {
-	if rc.messageID == "" {
-		return false
-	}
-	return !p.noReplyToTrigger
-}
-
 func (p *Platform) sendNewMessageToChat(ctx context.Context, rc replyContext, msgType, content string) error {
 	if rc.chatID == "" {
 		return fmt.Errorf("%s: chatID is empty, cannot send new message", p.tag())
@@ -3373,45 +3035,21 @@ func (p *Platform) buildReplyMessageReqBody(rc replyContext, msgType, content st
 }
 
 func (p *Platform) replyMessage(ctx context.Context, rc replyContext, msgType, content string) error {
-	req := larkim.NewReplyMessageReqBuilder().
-		MessageId(rc.messageID).
-		Body(p.buildReplyMessageReqBody(rc, msgType, content)).
-		Build()
-	return p.withTransientRetry(ctx, "reply", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "reply", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			resp, err := client.Im.Message.Reply(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: reply api call: %w", p.tag(), err)
-			}
-			if !resp.Success() {
-				return fmt.Errorf("%s: reply failed code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-			}
-			return nil
-		})
+	_, err := p.sendAPI().replyMessage(ctx, rc, msgType, content, feishuMessageAPILabels{
+		retry:   "reply",
+		network: "reply api call",
+		failed:  "reply failed",
 	})
+	return err
 }
 
 func (p *Platform) createMessage(ctx context.Context, chatID, msgType, content, op string) error {
-	req := larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(larkim.ReceiveIdTypeChatId).
-		Body(larkim.NewCreateMessageReqBodyBuilder().
-			ReceiveId(chatID).
-			MsgType(msgType).
-			Content(content).
-			Build()).
-		Build()
-	return p.withTransientRetry(ctx, op, func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, op, func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			resp, err := client.Im.Message.Create(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: %s api call: %w", p.tag(), op, err)
-			}
-			if !resp.Success() {
-				return fmt.Errorf("%s: %s failed code=%d msg=%s", p.tag(), op, resp.Code, resp.Msg)
-			}
-			return nil
-		})
+	_, err := p.sendAPI().createMessage(ctx, chatID, msgType, content, feishuMessageAPILabels{
+		retry:   op,
+		network: op + " api call",
+		failed:  op + " failed",
 	})
+	return err
 }
 
 func (p *Platform) withFreshTenantAccessTokenRetry(ctx context.Context, operation string, fn feishuRequestFunc) error {
@@ -3566,64 +3204,6 @@ func stringValue(v *string) string {
 	return *v
 }
 
-func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
-	// {platformName}:{chatID}:{userID}
-	parts := strings.SplitN(sessionKey, ":", 3)
-	if len(parts) < 2 || parts[0] != p.platformName {
-		return nil, fmt.Errorf("%s: invalid session key %q", p.tag(), sessionKey)
-	}
-	rc := replyContext{chatID: parts[1], sessionKey: sessionKey}
-	if len(parts) == 3 {
-		if rootID, ok := parseThreadRootID(parts[2]); ok {
-			rc.messageID = rootID
-		}
-	}
-	return rc, nil
-}
-
-// RelayGroupVisibilityKey implements core.RelayGroupVisibilityTarget for
-// feishu.  When the caller session key targets a feishu thread (its
-// third colon-separated segment carries a non-empty "root:" or
-// "thread:" prefix produced by makeSessionKey), the visibility echo
-// gets routed back into that thread; otherwise the platform returns
-// ("", false) so core falls back to the channel-level ":relay" default.
-func (p *Platform) RelayGroupVisibilityKey(callerSessionKey string) (string, bool) {
-	parts := strings.SplitN(callerSessionKey, ":", 3)
-	if len(parts) < 3 || parts[0] != "feishu" {
-		return "", false
-	}
-	chatID := parts[1]
-	third := parts[2]
-	for _, pfx := range []string{"root:", "thread:"} {
-		if after, ok := strings.CutPrefix(third, pfx); ok && after != "" {
-			return "feishu:" + chatID + ":" + third, true
-		}
-	}
-	return "", false
-}
-
-func parseThreadRootID(sessionTail string) (string, bool) {
-	for _, prefix := range []string{"root:", "thread:"} {
-		if strings.HasPrefix(sessionTail, prefix) {
-			rootID := strings.TrimPrefix(sessionTail, prefix)
-			if rootID != "" {
-				return rootID, true
-			}
-			return "", false
-		}
-	}
-	return "", false
-}
-
-func isThreadSessionKey(sessionKey string) bool {
-	parts := strings.SplitN(sessionKey, ":", 3)
-	if len(parts) != 3 {
-		return false
-	}
-	_, ok := parseThreadRootID(parts[2])
-	return ok
-}
-
 // feishuPreviewHandle stores the message ID for an editable preview message.
 // Card 2.0 path needs mu/status/lastContent to let SetPreviewStatus patch
 // the header color without re-rendering the whole card.
@@ -3641,531 +3221,6 @@ type feishuPreviewHandle struct {
 	sequence    int    // cardkit-v1 streaming text monotonic counter (++ before use; first call = 1)
 	status      core.CardStatus
 	lastContent string
-}
-
-// buildCardJSON builds a Feishu interactive card JSON string with a markdown element.
-// Uses schema 2.0 which supports code blocks, tables, and inline formatting.
-// Card font is inherently smaller than Post/Text — this is a Feishu platform limitation.
-func buildCardJSON(content string) string {
-	content = sanitizeCardMarkdownForCard(content)
-	card := map[string]any{
-		"schema": "2.0",
-		"config": map[string]any{
-			"wide_screen_mode": true,
-		},
-		"body": map[string]any{
-			"elements": []map[string]any{
-				{
-					"tag":     "markdown",
-					"content": content,
-				},
-			},
-		},
-	}
-	b, _ := json.Marshal(card)
-	return string(b)
-}
-
-// buildCardJSONWithStatusFooter builds an interactive card with a body
-// markdown element followed by a small/dim status-footer markdown element
-// (Lark `text_size: "notation"`). Empty footer falls through to buildCardJSON.
-func buildCardJSONWithStatusFooter(content, footer string) string {
-	if strings.TrimSpace(footer) == "" {
-		return buildCardJSON(content)
-	}
-	segments := sanitizeCardMarkdownSegmentsForCard([]string{content, footer})
-	content = segments[0]
-	footer = segments[1]
-	elements := []map[string]any{
-		{
-			"tag":     "markdown",
-			"content": content,
-		},
-		{
-			"tag": "hr",
-		},
-		{
-			"tag":       "markdown",
-			"content":   footer,
-			"text_size": "notation",
-		},
-	}
-	card := map[string]any{
-		"schema": "2.0",
-		"config": map[string]any{
-			"wide_screen_mode": true,
-		},
-		"body": map[string]any{
-			"elements": elements,
-		},
-	}
-	b, _ := json.Marshal(card)
-	return string(b)
-}
-
-func isZhLikeProgressLang(lang string) bool {
-	l := strings.ToLower(strings.TrimSpace(lang))
-	return strings.HasPrefix(l, "zh")
-}
-
-func progressAgentLabel(agent string) string {
-	agent = strings.TrimSpace(agent)
-	if agent == "" {
-		return "Agent"
-	}
-	return agent
-}
-
-func progressStateMeta(state core.ProgressCardState, lang string, agent string) (title string, template string, footer string) {
-	zh := isZhLikeProgressLang(lang)
-	switch state {
-	case core.ProgressCardStateCompleted:
-		if zh {
-			return fmt.Sprintf("%s · 已完成", agent), "green", "本过程卡片已停止更新，完整答复见下一条消息。"
-		}
-		return fmt.Sprintf("%s · Completed", agent), "green", "This progress card is no longer updating. Full response is in the next message."
-	case core.ProgressCardStateFailed:
-		if zh {
-			return fmt.Sprintf("%s · 失败", agent), "red", "本过程卡片已停止更新（失败），完整错误说明见下一条消息。"
-		}
-		return fmt.Sprintf("%s · Failed", agent), "red", "This progress card has stopped (failed). See the next message for details."
-	default:
-		if zh {
-			return fmt.Sprintf("%s · 进行中", agent), "blue", ""
-		}
-		return fmt.Sprintf("%s · Running", agent), "blue", ""
-	}
-}
-
-func progressKindLabel(kind core.ProgressCardEntryKind, lang string) string {
-	zh := isZhLikeProgressLang(lang)
-	switch kind {
-	case core.ProgressEntryThinking:
-		if zh {
-			return "思考"
-		}
-		return "Thinking"
-	case core.ProgressEntryToolUse:
-		if zh {
-			return "工具调用"
-		}
-		return "Tool"
-	case core.ProgressEntryToolResult:
-		if zh {
-			return "工具结果"
-		}
-		return "Result"
-	case core.ProgressEntryError:
-		if zh {
-			return "错误"
-		}
-		return "Error"
-	default:
-		if zh {
-			return "更新"
-		}
-		return "Update"
-	}
-}
-
-func normalizeProgressItems(payload *core.ProgressCardPayload) []core.ProgressCardEntry {
-	if payload == nil {
-		return nil
-	}
-	if len(payload.Items) > 0 {
-		return payload.Items
-	}
-	out := make([]core.ProgressCardEntry, 0, len(payload.Entries))
-	for _, entry := range payload.Entries {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		kind := core.ProgressEntryInfo
-		switch {
-		case strings.HasPrefix(entry, "💭"):
-			kind = core.ProgressEntryThinking
-		case strings.HasPrefix(entry, "🔧"), strings.Contains(entry, "**Tool #"):
-			kind = core.ProgressEntryToolUse
-		case strings.HasPrefix(entry, "🧾"):
-			kind = core.ProgressEntryToolResult
-		case strings.HasPrefix(entry, "❌"):
-			kind = core.ProgressEntryError
-		}
-		out = append(out, core.ProgressCardEntry{Kind: kind, Text: entry})
-	}
-	return out
-}
-
-func inlineCodeText(s string) string {
-	return strings.ReplaceAll(strings.TrimSpace(s), "`", "'")
-}
-
-func isBashToolName(toolName string) bool {
-	switch strings.ToLower(strings.TrimSpace(toolName)) {
-	case "bash", "shell", "run_shell_command":
-		return true
-	default:
-		return false
-	}
-}
-
-func isTodoWriteToolName(toolName string) bool {
-	return strings.EqualFold(strings.TrimSpace(toolName), "todowrite")
-}
-
-// todoItem represents a single todo item from TodoWrite tool input.
-type todoItem struct {
-	ActiveForm string `json:"activeForm"`
-	Content    string `json:"content"`
-	Status     string `json:"status"`
-}
-
-// todoWriteInput represents the TodoWrite tool input structure.
-type todoWriteInput struct {
-	Todos []todoItem `json:"todos"`
-}
-
-// formatTodoWriteInput formats TodoWrite JSON input into a readable markdown list.
-// Returns empty string if parsing fails or input is invalid.
-func formatTodoWriteInput(text string, lang string) string {
-	var input todoWriteInput
-	if err := json.Unmarshal([]byte(text), &input); err != nil {
-		return "" // Fall back to default formatting
-	}
-	if len(input.Todos) == 0 {
-		return ""
-	}
-
-	var sb strings.Builder
-	for _, todo := range input.Todos {
-		var icon string
-		switch strings.ToLower(strings.TrimSpace(todo.Status)) {
-		case "completed":
-			icon = "✅"
-		case "in_progress":
-			icon = "🔄"
-		case "pending":
-			icon = "⏳"
-		default:
-			icon = "•"
-		}
-
-		content := strings.TrimSpace(todo.Content)
-		if content == "" {
-			continue
-		}
-
-		// Escape markdown special characters
-		content = strings.ReplaceAll(content, "`", "'")
-
-		sb.WriteString(icon)
-		sb.WriteString(" ")
-		sb.WriteString(content)
-
-		activeForm := strings.TrimSpace(todo.ActiveForm)
-		if activeForm != "" && activeForm != content {
-			sb.WriteString(" _(")
-			sb.WriteString(strings.ReplaceAll(activeForm, "`", "'"))
-			sb.WriteString(")_")
-		}
-		sb.WriteString("\n")
-	}
-
-	return strings.TrimSuffix(sb.String(), "\n")
-}
-
-func formatProgressToolInput(toolName, text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-
-	// Special handling for TodoWrite tool - format JSON as readable list
-	if isTodoWriteToolName(toolName) {
-		if formatted := formatTodoWriteInput(text, ""); formatted != "" {
-			return formatted
-		}
-		// JSON parsing failed or empty todos - show raw input as text block
-		return fmt.Sprintf("```text\n%s\n```", text)
-	}
-
-	text = preprocessFeishuMarkdown(sanitizeMarkdownURLs(text))
-	if strings.Contains(text, "```") {
-		return text
-	}
-	if isBashToolName(toolName) {
-		return fmt.Sprintf("```bash\n%s\n```", text)
-	}
-	if strings.Contains(text, "\n") || len(text) > 180 {
-		return fmt.Sprintf("```text\n%s\n```", text)
-	}
-	return fmt.Sprintf("`%s`", inlineCodeText(text))
-}
-
-func formatProgressToolResult(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-	text = preprocessFeishuMarkdown(sanitizeMarkdownURLs(text))
-	if strings.Contains(text, "```") {
-		return text
-	}
-	if strings.Contains(text, "\n") || len(text) > 220 {
-		return fmt.Sprintf("```\n%s\n```", text)
-	}
-	return text
-}
-
-func progressNoOutputText(lang string) string {
-	if isZhLikeProgressLang(lang) {
-		return "无输出"
-	}
-	return "No output"
-}
-
-func progressResultDot(item core.ProgressCardEntry) string {
-	if item.Success != nil {
-		if *item.Success {
-			return "🟢"
-		}
-		return "🔴"
-	}
-	if item.ExitCode != nil {
-		if *item.ExitCode == 0 {
-			return "🟢"
-		}
-		return "🔴"
-	}
-	if strings.EqualFold(strings.TrimSpace(item.Status), "completed") || strings.EqualFold(strings.TrimSpace(item.Status), "success") || strings.EqualFold(strings.TrimSpace(item.Status), "succeeded") || strings.EqualFold(strings.TrimSpace(item.Status), "ok") {
-		return "🟢"
-	}
-	if strings.EqualFold(strings.TrimSpace(item.Status), "failed") || strings.EqualFold(strings.TrimSpace(item.Status), "error") {
-		return "🔴"
-	}
-	return "⚪"
-}
-
-func progressToolElement(iconToken string, content string) map[string]any {
-	elem := map[string]any{
-		"tag": "div",
-		"text": map[string]any{
-			"tag":     "lark_md",
-			"content": content,
-		},
-	}
-	if iconToken != "" {
-		elem["icon"] = map[string]any{"tag": "standard_icon", "token": iconToken}
-	}
-	return elem
-}
-
-func renderProgressEntryElement(item core.ProgressCardEntry, lang string) map[string]any {
-	text := strings.TrimSpace(item.Text)
-	if text == "" {
-		text = " "
-	}
-	switch item.Kind {
-	case core.ProgressEntryThinking:
-		return map[string]any{
-			"tag":  "div",
-			"icon": map[string]any{"tag": "standard_icon", "token": reasoningToolIcon},
-			"text": map[string]any{
-				"tag":        "plain_text",
-				"content":    "💭 " + inlineCodeText(text),
-				"text_size":  "notation",
-				"text_color": "grey",
-			},
-		}
-	case core.ProgressEntryToolUse:
-		toolName := strings.TrimSpace(item.Tool)
-		if toolName == "" {
-			toolName = "Tool"
-		}
-		display := buildToolDisplay(toolName, text)
-		content := fmt.Sprintf("<text_tag color='blue'>%s</text_tag> **%s**", progressKindLabel(item.Kind, lang), inlineCodeText(display.Title))
-		if body := formatProgressToolInput(toolName, display.Detail); body != "" {
-			content += "\n" + body
-		}
-		return progressToolElement(display.IconToken, content)
-	case core.ProgressEntryToolResult:
-		toolName := strings.TrimSpace(item.Tool)
-		display := buildToolDisplay(toolName, "")
-		content := fmt.Sprintf("<text_tag color='turquoise'>%s</text_tag> **%s**", progressKindLabel(item.Kind, lang), inlineCodeText(display.Title))
-		dot := progressResultDot(item)
-		meta := dot
-		if item.ExitCode != nil {
-			meta += fmt.Sprintf(" exit code: `%d`", *item.ExitCode)
-		}
-		content += "\n" + meta
-		if body := formatProgressToolResult(sanitizeToolDetail(toolSanitizerGeneric, item.Text)); body != "" {
-			content += "\n" + body
-		} else {
-			content += "\n_" + progressNoOutputText(lang) + "_"
-		}
-		return progressToolElement(display.IconToken, content)
-	case core.ProgressEntryError:
-		content := fmt.Sprintf("<text_tag color='red'>%s</text_tag>\n%s", progressKindLabel(item.Kind, lang), sanitizeCardMarkdownForCard(text))
-		return map[string]any{
-			"tag":     "markdown",
-			"content": content,
-		}
-	default:
-		return map[string]any{
-			"tag":     "markdown",
-			"content": sanitizeCardMarkdownForCard(text),
-		}
-	}
-}
-
-func splitProgressItemsByLane(items []core.ProgressCardEntry) (reasoning []core.ProgressCardEntry, tools []core.ProgressCardEntry, others []core.ProgressCardEntry) {
-	for _, item := range items {
-		switch item.Kind {
-		case core.ProgressEntryThinking:
-			reasoning = append(reasoning, item)
-		case core.ProgressEntryToolUse, core.ProgressEntryToolResult:
-			tools = append(tools, item)
-		default:
-			others = append(others, item)
-		}
-	}
-	return reasoning, tools, others
-}
-
-func progressPanelTitle(label string, count int, lang string) string {
-	if isZhLikeProgressLang(lang) {
-		switch label {
-		case "Reasoning":
-			label = "思考"
-		case "Tools":
-			label = "工具"
-		case "Updates":
-			label = "更新"
-		}
-	}
-	if count > 0 {
-		return fmt.Sprintf("%s (%d)", label, count)
-	}
-	return label
-}
-
-func buildProgressPanel(title string, expanded bool, elements []map[string]any) map[string]any {
-	return map[string]any{
-		"tag":              "collapsible_panel",
-		"expanded":         expanded,
-		"background_color": "grey",
-		"header": map[string]any{
-			"title": map[string]any{"tag": "plain_text", "content": title},
-		},
-		"border":           map[string]any{"color": "grey"},
-		"vertical_spacing": "8px",
-		"padding":          "4px 8px",
-		"elements":         elements,
-	}
-}
-
-func buildProgressPanelElements(items []core.ProgressCardEntry, lang string) []map[string]any {
-	elements := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		elements = append(elements, renderProgressEntryElement(item, lang))
-	}
-	return elements
-}
-
-func appendProgressGroupedElements(elements []map[string]any, items []core.ProgressCardEntry, lang string, running bool) []map[string]any {
-	reasoning, tools, others := splitProgressItemsByLane(items)
-	if len(reasoning) > 0 {
-		elements = append(elements, buildProgressPanel(
-			progressPanelTitle("Reasoning", len(reasoning), lang),
-			running,
-			buildProgressPanelElements(reasoning, lang),
-		))
-	}
-	if len(tools) > 0 {
-		elements = append(elements, buildProgressPanel(
-			progressPanelTitle("Tools", len(tools), lang),
-			running,
-			buildProgressPanelElements(tools, lang),
-		))
-	}
-	if len(others) > 0 {
-		elements = append(elements, buildProgressPanel(
-			progressPanelTitle("Updates", len(others), lang),
-			running,
-			buildProgressPanelElements(others, lang),
-		))
-	}
-	return elements
-}
-
-func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string {
-	items := normalizeProgressItems(payload)
-	if len(items) == 0 {
-		return buildCardJSON(" ")
-	}
-
-	agent := progressAgentLabel(payload.Agent)
-	title, template, footer := progressStateMeta(payload.State, payload.Lang, agent)
-	running := payload.State == core.ProgressCardStateRunning
-
-	elements := make([]map[string]any, 0, len(items)+3)
-	if payload.Truncated {
-		truncatedText := "Showing latest updates only."
-		if isZhLikeProgressLang(payload.Lang) {
-			truncatedText = "仅显示最近更新。"
-		}
-		elements = append(elements, map[string]any{
-			"tag": "div",
-			"text": map[string]any{
-				"tag":        "plain_text",
-				"content":    truncatedText,
-				"text_size":  "notation",
-				"text_color": "grey",
-			},
-		})
-		elements = append(elements, map[string]any{"tag": "hr"})
-	}
-
-	elements = appendProgressGroupedElements(elements, items, payload.Lang, running)
-	if footer != "" {
-		elements = append(elements, map[string]any{"tag": "hr"})
-		elements = append(elements, map[string]any{
-			"tag": "div",
-			"text": map[string]any{
-				"tag":        "plain_text",
-				"content":    footer,
-				"text_size":  "notation",
-				"text_color": "grey",
-			},
-		})
-	}
-
-	card := map[string]any{
-		"schema": "2.0",
-		"config": map[string]any{
-			"wide_screen_mode": true,
-		},
-		"header": map[string]any{
-			"title": map[string]any{
-				"tag":     "plain_text",
-				"content": title,
-			},
-			"template": template,
-		},
-		"body": map[string]any{
-			"elements": elements,
-		},
-	}
-	b, _ := json.Marshal(card)
-	return string(b)
-}
-
-func buildPreviewCardJSON(content string) string {
-	if payload, ok := core.ParseProgressCardPayload(content); ok {
-		return buildProgressCardJSONFromPayload(payload)
-	}
-	return buildCardJSON(sanitizeMarkdownURLs(content))
 }
 
 // SendPreviewStart sends a new card message and returns a handle for subsequent edits.
@@ -4225,56 +3280,24 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 
 	var msgID string
 	if p.shouldUseThreadOrReplyAPI(rc) {
-		req := larkim.NewReplyMessageReqBuilder().
-			MessageId(rc.messageID).
-			Body(p.buildReplyMessageReqBody(rc, larkim.MsgTypeInteractive, sendContent)).
-			Build()
-		var resp *larkim.ReplyMessageResp
-		if err := p.withTransientRetry(ctx, "send preview", func() error {
-			return p.withFreshTenantAccessTokenRetry(ctx, "send preview", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-				var err error
-				resp, err = client.Im.Message.Reply(ctx, req, options...)
-				if err != nil {
-					return fmt.Errorf("%s: send preview (reply): %w", p.tag(), err)
-				}
-				if !resp.Success() {
-					return fmt.Errorf("%s: send preview (reply) code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-				}
-				return nil
-			})
-		}); err != nil {
+		var err error
+		msgID, err = p.sendAPI().replyMessage(ctx, rc, larkim.MsgTypeInteractive, sendContent, feishuMessageAPILabels{
+			retry:   "send preview",
+			network: "send preview (reply)",
+			failed:  "send preview (reply)",
+		})
+		if err != nil {
 			return nil, err
-		}
-		if resp.Data != nil && resp.Data.MessageId != nil {
-			msgID = *resp.Data.MessageId
 		}
 	} else {
-		req := larkim.NewCreateMessageReqBuilder().
-			ReceiveIdType(larkim.ReceiveIdTypeChatId).
-			Body(larkim.NewCreateMessageReqBodyBuilder().
-				ReceiveId(chatID).
-				MsgType(larkim.MsgTypeInteractive).
-				Content(sendContent).
-				Build()).
-			Build()
-		var resp *larkim.CreateMessageResp
-		if err := p.withTransientRetry(ctx, "send preview", func() error {
-			return p.withFreshTenantAccessTokenRetry(ctx, "send preview", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-				var err error
-				resp, err = client.Im.Message.Create(ctx, req, options...)
-				if err != nil {
-					return fmt.Errorf("%s: send preview: %w", p.tag(), err)
-				}
-				if !resp.Success() {
-					return fmt.Errorf("%s: send preview code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-				}
-				return nil
-			})
-		}); err != nil {
+		var err error
+		msgID, err = p.sendAPI().createMessage(ctx, chatID, larkim.MsgTypeInteractive, sendContent, feishuMessageAPILabels{
+			retry:   "send preview",
+			network: "send preview",
+			failed:  "send preview",
+		})
+		if err != nil {
 			return nil, err
-		}
-		if resp.Data != nil && resp.Data.MessageId != nil {
-			msgID = *resp.Data.MessageId
 		}
 	}
 
@@ -4461,23 +3484,10 @@ func (p *Platform) UpdateMessageWithStatusFooter(ctx context.Context, previewHan
 }
 
 func (p *Platform) patchCardMessage(ctx context.Context, messageID, cardJSON string) error {
-	req := larkim.NewPatchMessageReqBuilder().
-		MessageId(messageID).
-		Body(larkim.NewPatchMessageReqBodyBuilder().
-			Content(cardJSON).
-			Build()).
-		Build()
-	return p.withTransientRetry(ctx, "patch message", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "patch message", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			resp, err := client.Im.Message.Patch(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: patch message: %w", p.tag(), err)
-			}
-			if !resp.Success() {
-				return fmt.Errorf("%s: patch message code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-			}
-			return nil
-		})
+	return p.sendAPI().patchMessage(ctx, messageID, cardJSON, feishuMessageAPILabels{
+		retry:   "patch message",
+		network: "patch message",
+		failed:  "patch message",
 	})
 }
 
@@ -4604,33 +3614,10 @@ func (p *Platform) SendAudio(ctx context.Context, rctx any, audio []byte, format
 		format = "opus"
 	}
 
-	var uploadResp *larkim.CreateFileResp
-	if err := p.withTransientRetry(ctx, "upload audio", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "upload audio", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			req := larkim.NewCreateFileReqBuilder().
-				Body(larkim.NewCreateFileReqBodyBuilder().
-					FileType(larkim.FileTypeOpus).
-					FileName("tts_audio.opus").
-					File(bytes.NewReader(audio)).
-					Build()).
-				Build()
-			var err error
-			uploadResp, err = client.Im.File.Create(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: upload audio: %w", p.tag(), err)
-			}
-			if !uploadResp.Success() {
-				return fmt.Errorf("%s: upload audio code=%d msg=%s", p.tag(), uploadResp.Code, uploadResp.Msg)
-			}
-			return nil
-		})
-	}); err != nil {
+	fileKey, err := p.sendAPI().uploadFileKey(ctx, "upload audio", larkim.FileTypeOpus, "tts_audio.opus", audio)
+	if err != nil {
 		return err
 	}
-	if uploadResp.Data == nil || uploadResp.Data.FileKey == nil {
-		return fmt.Errorf("%s: upload audio: no file_key returned", p.tag())
-	}
-	fileKey := *uploadResp.Data.FileKey
 
 	slog.Debug(p.tag()+": audio uploaded", "file_key", fileKey, "format", format, "size", len(audio))
 
@@ -4679,33 +3666,10 @@ func (p *Platform) SendVideo(ctx context.Context, rctx any, video []byte, format
 		}
 	}
 
-	var uploadResp *larkim.CreateFileResp
-	if err := p.withTransientRetry(ctx, "upload video", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "upload video", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			req := larkim.NewCreateFileReqBuilder().
-				Body(larkim.NewCreateFileReqBodyBuilder().
-					FileType(larkim.FileTypeMp4).
-					FileName(fileName).
-					File(bytes.NewReader(video)).
-					Build()).
-				Build()
-			var err error
-			uploadResp, err = client.Im.File.Create(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: upload video: %w", p.tag(), err)
-			}
-			if !uploadResp.Success() {
-				return fmt.Errorf("%s: upload video code=%d msg=%s", p.tag(), uploadResp.Code, uploadResp.Msg)
-			}
-			return nil
-		})
-	}); err != nil {
+	fileKey, err := p.sendAPI().uploadFileKey(ctx, "upload video", larkim.FileTypeMp4, fileName, video)
+	if err != nil {
 		return err
 	}
-	if uploadResp.Data == nil || uploadResp.Data.FileKey == nil {
-		return fmt.Errorf("%s: upload video: no file_key returned", p.tag())
-	}
-	fileKey := *uploadResp.Data.FileKey
 
 	slog.Debug(p.tag()+": video uploaded", "file_key", fileKey, "format", format, "size", len(video))
 
@@ -5502,21 +4466,6 @@ func pickThinkingVerb() string {
 	return thinkingVerbs[idx] + "..."
 }
 
-var markdownTablePattern = regexp.MustCompile(`(?m)^\|.+\|\s*\n\|[\s:|-]+\|\s*\n(?:\|.+\|\s*\n?)+`)
-
-type markdownTextMatch struct {
-	start int
-	end   int
-	raw   string
-}
-
-type markdownLine struct {
-	text       string
-	start, end int
-}
-
-var feishuCardImagePattern = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
-
 const (
 	richCardImageFinalWait = 4 * time.Second
 	richCardImageMaxBytes  = 10 * 1024 * 1024
@@ -5837,585 +4786,6 @@ func isSupportedRichCardImageMIME(mimeType string) bool {
 	}
 }
 
-func markdownLinesWithOffsets(text string) []markdownLine {
-	if text == "" {
-		return nil
-	}
-	parts := strings.SplitAfter(text, "\n")
-	lines := make([]markdownLine, 0, len(parts))
-	offset := 0
-	for _, part := range parts {
-		if part == "" {
-			continue
-		}
-		next := offset + len(part)
-		lines = append(lines, markdownLine{text: part, start: offset, end: next})
-		offset = next
-	}
-	return lines
-}
-
-func isMarkdownTableRow(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	return len(trimmed) >= 2 && strings.HasPrefix(trimmed, "|") && strings.HasSuffix(trimmed, "|")
-}
-
-func isMarkdownTableSeparator(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	if !isMarkdownTableRow(trimmed) {
-		return false
-	}
-	hasDash := false
-	for _, r := range trimmed {
-		switch r {
-		case '|', '-', ':', ' ':
-			if r == '-' {
-				hasDash = true
-			}
-		default:
-			return false
-		}
-	}
-	return hasDash
-}
-
-func findMarkdownTablesOutsideCodeBlocks(text string) []markdownTextMatch {
-	lines := markdownLinesWithOffsets(text)
-	var matches []markdownTextMatch
-	inCodeBlock := false
-	for i := 0; i < len(lines); i++ {
-		trimmed := strings.TrimSpace(lines[i].text)
-		if strings.HasPrefix(trimmed, "```") {
-			inCodeBlock = !inCodeBlock
-			continue
-		}
-		if inCodeBlock || i+1 >= len(lines) || !isMarkdownTableRow(lines[i].text) || !isMarkdownTableSeparator(lines[i+1].text) {
-			continue
-		}
-		start := lines[i].start
-		end := lines[i+1].end
-		j := i + 2
-		for j < len(lines) && isMarkdownTableRow(lines[j].text) {
-			end = lines[j].end
-			j++
-		}
-		matches = append(matches, markdownTextMatch{
-			start: start,
-			end:   end,
-			raw:   strings.TrimSpace(text[start:end]),
-		})
-		i = j - 1
-	}
-	return matches
-}
-
-func wrapTablesBeyondLimit(text string, matches []markdownTextMatch, keepCount int) string {
-	if len(matches) <= keepCount {
-		return text
-	}
-	if keepCount < 0 {
-		keepCount = 0
-	}
-	result := text
-	for i := len(matches) - 1; i >= keepCount; i-- {
-		match := matches[i]
-		replacement := "```\n" + match.raw + "\n```"
-		result = result[:match.start] + replacement + result[match.end:]
-	}
-	return result
-}
-
-func sanitizeCardMarkdownTables(text string, remainingBudget int) (string, int) {
-	matches := findMarkdownTablesOutsideCodeBlocks(text)
-	if len(matches) <= remainingBudget {
-		return text, remainingBudget - len(matches)
-	}
-	return wrapTablesBeyondLimit(text, matches, remainingBudget), 0
-}
-
-func stripInvalidFeishuCardImages(text string) string {
-	if !strings.Contains(text, "![") {
-		return text
-	}
-	return feishuCardImagePattern.ReplaceAllStringFunc(text, func(match string) string {
-		parts := feishuCardImagePattern.FindStringSubmatch(match)
-		if len(parts) == 3 && strings.HasPrefix(parts[2], "img_") {
-			return match
-		}
-		return ""
-	})
-}
-
-func protectFencedCodeBlocks(text string) (string, []string) {
-	var blocks []string
-	var b strings.Builder
-	for i := 0; i < len(text); {
-		start := strings.Index(text[i:], "```")
-		if start < 0 {
-			b.WriteString(text[i:])
-			break
-		}
-		start += i
-		end := strings.Index(text[start+3:], "```")
-		if end < 0 {
-			b.WriteString(text[i:])
-			break
-		}
-		end += start + 6
-		b.WriteString(text[i:start])
-		placeholder := fmt.Sprintf("\x00CC_FEISHU_CODE_BLOCK_%d\x00", len(blocks))
-		blocks = append(blocks, text[start:end])
-		b.WriteString(placeholder)
-		i = end
-	}
-	return b.String(), blocks
-}
-
-func restoreFencedCodeBlocks(text string, blocks []string) string {
-	for i, block := range blocks {
-		placeholder := fmt.Sprintf("\x00CC_FEISHU_CODE_BLOCK_%d\x00", i)
-		text = strings.ReplaceAll(text, placeholder, block)
-	}
-	return text
-}
-
-func optimizeFeishuCardMarkdown(text string) string {
-	protected, blocks := protectFencedCodeBlocks(text)
-	if regexp.MustCompile(`(?m)^#{1,3} `).MatchString(protected) {
-		protected = regexp.MustCompile(`(?m)^#{2,6} (.+)$`).ReplaceAllString(protected, "##### $1")
-		protected = regexp.MustCompile(`(?m)^# (.+)$`).ReplaceAllString(protected, "#### $1")
-	}
-	protected = regexp.MustCompile(`\n{3,}`).ReplaceAllString(protected, "\n\n")
-	return restoreFencedCodeBlocks(protected, blocks)
-}
-
-func sanitizeCardMarkdownSegmentsForCard(texts []string) []string {
-	out := make([]string, len(texts))
-	remainingBudget := feishuCardTableLimit
-	for i, text := range texts {
-		prepared := sanitizeMarkdownURLs(preprocessFeishuMarkdown(text))
-		prepared = stripInvalidFeishuCardImages(prepared)
-		prepared = optimizeFeishuCardMarkdown(prepared)
-		prepared, remainingBudget = sanitizeCardMarkdownTables(prepared, remainingBudget)
-		out[i] = prepared
-	}
-	return out
-}
-
-func sanitizeCardMarkdownForCard(text string) string {
-	return sanitizeCardMarkdownSegmentsForCard([]string{text})[0]
-}
-
-func richStepDisplayName(step core.ToolStep) string {
-	if step.Kind == core.ToolStepKindThinking {
-		return "Thinking"
-	}
-	return buildToolDisplay(step.Name, step.Summary).Title
-}
-
-func richStepBody(step core.ToolStep) string {
-	name := richStepDisplayName(step)
-	summary := buildToolDisplay(step.Name, step.Summary).Detail
-	if summary == "" {
-		summary = name
-	}
-	if step.Kind == core.ToolStepKindThinking {
-		return summary
-	}
-
-	lines := []string{summary}
-	var statusParts []string
-	status := strings.TrimSpace(step.Status)
-	if status != "" {
-		statusParts = append(statusParts, "status: "+status)
-	} else if step.Success != nil {
-		if *step.Success {
-			statusParts = append(statusParts, "status: ok")
-		} else {
-			statusParts = append(statusParts, "status: failed")
-		}
-	}
-	if step.ExitCode != nil {
-		statusParts = append(statusParts, fmt.Sprintf("exit: %d", *step.ExitCode))
-	}
-	if len(statusParts) > 0 {
-		lines = append(lines, strings.Join(statusParts, " | "))
-	}
-	if result := strings.TrimSpace(step.Result); result != "" {
-		lines = append(lines, result)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// isCardJSON returns true if content looks like a complete Feishu card JSON
-// (has "schema" and "body"). Used to avoid double-wrapping rich card output.
-func isCardJSON(content string) bool {
-	if len(content) < 10 || content[0] != '{' {
-		return false
-	}
-	return strings.Contains(content, `"schema"`) && strings.Contains(content, `"body"`)
-}
-
-// buildCardJSONWithStatus builds a Feishu card JSON with a colored header
-// reflecting the given status. Used as a fallback when rich-card assembly fails.
-func buildCardJSONWithStatus(content string, status core.CardStatus) string {
-	content = sanitizeCardMarkdownForCard(content)
-	template := "grey"
-	switch status {
-	case core.CardStatusWorking, core.CardStatusThinking:
-		template = "blue"
-	case core.CardStatusDone:
-		template = "green"
-	case core.CardStatusError:
-		template = "red"
-	}
-	card := map[string]any{
-		"schema": "2.0",
-		"config": map[string]any{
-			"width_mode": "default", // schema 2.0 field; was wide_screen_mode (schema 1.0)
-		},
-		"header": map[string]any{
-			"template": template,
-			"title":    map[string]any{"tag": "plain_text", "content": ""},
-		},
-		"body": map[string]any{
-			"elements": []map[string]any{
-				{
-					"tag":     "markdown",
-					"content": content,
-				},
-			},
-		},
-	}
-	b, _ := json.Marshal(card)
-	return string(b)
-}
-
-func splitRichStepsByLane(steps []core.ToolStep) (reasoning []core.ToolStep, tools []core.ToolStep) {
-	for _, step := range steps {
-		if step.Kind == core.ToolStepKindThinking {
-			reasoning = append(reasoning, step)
-			continue
-		}
-		tools = append(tools, step)
-	}
-	return reasoning, tools
-}
-
-func richLaneTitle(label string, count int) string {
-	if count > 0 {
-		return fmt.Sprintf("%s (%d)", label, count)
-	}
-	return label
-}
-
-func richStepRowContent(step core.ToolStep) string {
-	body := richStepBody(step)
-	if step.Kind == core.ToolStepKindThinking {
-		return body
-	}
-	name := richStepDisplayName(step)
-	if body == name || strings.HasPrefix(body, name+"\n") {
-		return body
-	}
-	return name + "\n" + body
-}
-
-func richStepElement(step core.ToolStep) map[string]any {
-	text := map[string]any{
-		"tag":       "plain_text",
-		"content":   richStepRowContent(step),
-		"text_size": "notation",
-	}
-	elem := map[string]any{
-		"tag":  "div",
-		"text": text,
-	}
-	if step.Kind == core.ToolStepKindThinking {
-		text["text_color"] = "grey"
-		elem["icon"] = map[string]any{"tag": "standard_icon", "token": reasoningToolIcon}
-		return elem
-	}
-	elem["icon"] = map[string]any{"tag": "standard_icon", "token": buildToolDisplay(step.Name, step.Summary).IconToken}
-	return elem
-}
-
-func richPlaceholderElement(text string) map[string]any {
-	return map[string]any{
-		"tag": "div",
-		"text": map[string]any{
-			"tag":        "plain_text",
-			"content":    text,
-			"text_size":  "notation",
-			"text_color": "grey",
-		},
-	}
-}
-
-func richPanelElements(steps []core.ToolStep, emptyText string) []map[string]any {
-	if len(steps) == 0 {
-		return []map[string]any{richPlaceholderElement(emptyText)}
-	}
-	const maxPanelSteps = 10
-	visible := steps
-	hidden := 0
-	if len(steps) > maxPanelSteps {
-		hidden = len(steps) - maxPanelSteps
-		visible = steps[hidden:]
-	}
-	elements := make([]map[string]any, 0, len(visible)+1)
-	if hidden > 0 {
-		elements = append(elements, richPlaceholderElement(fmt.Sprintf("... %d earlier steps hidden", hidden)))
-	}
-	for _, step := range visible {
-		elements = append(elements, richStepElement(step))
-	}
-	return elements
-}
-
-func buildRichPanel(title string, expanded bool, elements []map[string]any) map[string]any {
-	return map[string]any{
-		"tag":              "collapsible_panel",
-		"expanded":         expanded,
-		"background_color": "grey",
-		"header": map[string]any{
-			"title": map[string]any{"tag": "plain_text", "content": title},
-		},
-		"border":           map[string]any{"color": "grey"},
-		"vertical_spacing": "8px",
-		"padding":          "4px 8px",
-		"elements":         elements,
-	}
-}
-
-const maxRichCardJSONBytes = 28000
-
-// buildRichCard renders a Card 2.0 "single-card" turn with collapsible
-// reasoning/tool panels, streaming markdown body, status-colored header, and a
-// pre-composed multi-line statusFooter (engine-owned, includes elapsed).
-func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, markdown string, streaming bool, statusFooter string) string {
-	b, err := buildRichCardJSONBytes(status, steps, markdown, streaming, statusFooter)
-	if err != nil {
-		slog.Debug("feishu: build rich card marshal failed, fallback to basic card", "error", err)
-		return buildCardJSONWithStatus(markdown, status)
-	}
-	if len(b) <= maxRichCardJSONBytes {
-		return string(b)
-	}
-
-	// Keep Card 2.0 visible when long tool/reasoning history would exceed the
-	// Feishu payload limit. Dropping to a body-only fallback is unsafe because
-	// Codex intermediate messages often live only in panels, leaving markdown
-	// empty and producing a blank white card on update.
-	for _, limit := range []struct {
-		perLane int
-		textLen int
-	}{
-		{perLane: 10, textLen: 180},
-		{perLane: 6, textLen: 120},
-		{perLane: 3, textLen: 80},
-	} {
-		compactSteps := compactRichStepsForCardSize(steps, limit.perLane, limit.textLen)
-		compact, err := buildRichCardJSONBytes(status, compactSteps, markdown, streaming, statusFooter)
-		if err == nil && len(compact) <= maxRichCardJSONBytes {
-			slog.Debug("feishu: rich card exceeded size limit, compacted panels",
-				"original_size", len(b),
-				"compacted_size", len(compact),
-				"steps", len(steps),
-				"compacted_steps", len(compactSteps),
-			)
-			return string(compact)
-		}
-	}
-
-	fallbackMarkdown := markdown
-	if strings.TrimSpace(fallbackMarkdown) == "" {
-		fallbackMarkdown = compactRichFallbackMarkdown(steps)
-	}
-	slog.Debug("feishu: rich card exceeds size limit, fallback to compact markdown card", "size", len(b))
-	return buildCardJSONWithStatus(fallbackMarkdown, status)
-}
-
-func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markdown string, streaming bool, statusFooter string) ([]byte, error) {
-	reasoningSteps, toolSteps := splitRichStepsByLane(steps)
-	panelMaps := make([]map[string]any, 0, 2)
-	if len(reasoningSteps) > 0 {
-		panelMaps = append(panelMaps, buildRichPanel(
-			richLaneTitle("Reasoning", len(reasoningSteps)),
-			streaming,
-			richPanelElements(reasoningSteps, "Thinking..."),
-		))
-	}
-	if len(toolSteps) > 0 {
-		panelMaps = append(panelMaps, buildRichPanel(
-			richLaneTitle("Tools", len(toolSteps)),
-			streaming,
-			richPanelElements(toolSteps, "No tool steps"),
-		))
-	}
-	if len(panelMaps) == 0 && streaming {
-		panelMaps = append(panelMaps, buildRichPanel("Reasoning", true, richPanelElements(nil, "Thinking...")))
-	}
-
-	markdownMap := map[string]any{
-		"tag":        "markdown",
-		"element_id": richCardMainTextElementID, // required for cardkit-v1 streaming text update
-		"content":    sanitizeCardMarkdownForCard(markdown),
-	}
-
-	// Footer: engine pre-composes a multi-line statusFooter (lines separated by \n).
-	// Each line renders as its own dim "notation"-sized markdown block so they
-	// visually sit below the body without being mistaken for content. Skip
-	// rendering when statusFooter is empty (footer disabled / nothing to show).
-	var footerElements []map[string]any
-	if statusFooter != "" {
-		for _, line := range strings.Split(statusFooter, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			footerElements = append(footerElements, map[string]any{
-				"tag":        "markdown",
-				"content":    sanitizeCardMarkdownForCard(line),
-				"text_size":  "notation",
-
-			})
-		}
-	}
-
-	var elements []map[string]any
-	if len(panelMaps) > 0 {
-		elements = append(elements, panelMaps...)
-		elements = append(elements, markdownMap)
-	} else {
-		elements = append(elements, markdownMap)
-	}
-	if len(footerElements) > 0 {
-		// Insert a horizontal separator between body and footer so the boundary is clear.
-		elements = append(elements, map[string]any{"tag": "hr"})
-		elements = append(elements, footerElements...)
-	}
-
-	// Header template color follows status.
-	headerTemplate := "blue"
-	headerTitle := pickThinkingVerb()
-	switch status {
-	case core.CardStatusDone:
-		headerTemplate = "green"
-		headerTitle = "Done"
-	case core.CardStatusError:
-		headerTemplate = "red"
-		headerTitle = "Error"
-	case core.CardStatusThinking, core.CardStatusWorking:
-		headerTemplate = "blue"
-		headerTitle = pickThinkingVerb()
-	}
-
-	card := map[string]any{
-		"schema": "2.0",
-		"config": map[string]any{
-			"streaming_mode":             streaming,
-			"update_multi":               true,
-			"enable_forward_interaction": true,
-		},
-		"header": map[string]any{
-			"template": headerTemplate,
-			"title":    map[string]any{"tag": "plain_text", "content": headerTitle},
-		},
-		"body": map[string]any{"elements": elements},
-	}
-
-	return json.Marshal(card)
-}
-
-func compactRichStepsForCardSize(steps []core.ToolStep, perLaneLimit, textLimit int) []core.ToolStep {
-	if len(steps) == 0 || perLaneLimit <= 0 {
-		return nil
-	}
-	kept := make([]core.ToolStep, 0, min(len(steps), perLaneLimit*2))
-	reasoning := 0
-	tools := 0
-	for i := len(steps) - 1; i >= 0; i-- {
-		step := steps[i]
-		if step.Kind == core.ToolStepKindThinking {
-			if reasoning >= perLaneLimit {
-				continue
-			}
-			reasoning++
-		} else {
-			if tools >= perLaneLimit {
-				continue
-			}
-			tools++
-		}
-		kept = append(kept, compactRichStepText(step, textLimit))
-	}
-	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
-		kept[i], kept[j] = kept[j], kept[i]
-	}
-	return kept
-}
-
-func compactRichStepText(step core.ToolStep, textLimit int) core.ToolStep {
-	step.Summary = compactRichText(step.Summary, textLimit)
-	step.Result = compactRichText(step.Result, textLimit)
-	return step
-}
-
-func compactRichText(s string, maxRunes int) string {
-	if maxRunes <= 0 {
-		return ""
-	}
-	rs := []rune(strings.TrimSpace(s))
-	if len(rs) <= maxRunes {
-		return string(rs)
-	}
-	return string(rs[:maxRunes]) + "..."
-}
-
-func compactRichFallbackMarkdown(steps []core.ToolStep) string {
-	compactSteps := compactRichStepsForCardSize(steps, 3, 120)
-	if len(compactSteps) == 0 {
-		return ""
-	}
-	lines := []string{"Card content is large; showing recent activity:"}
-	for _, step := range compactSteps {
-		line := strings.TrimSpace(richStepRowContent(step))
-		if line == "" {
-			continue
-		}
-		line = strings.ReplaceAll(line, "\n", " - ")
-		lines = append(lines, "- "+line)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func splitMarkdownByTables(md string, maxTables int) []string {
-	if maxTables <= 0 {
-		return []string{md}
-	}
-	matches := markdownTablePattern.FindAllStringIndex(md, -1)
-	if len(matches) <= maxTables {
-		return []string{md}
-	}
-	parts := make([]string, 0, len(matches)-maxTables+1)
-	firstEnd := len(md)
-	if len(matches) > maxTables {
-		firstEnd = matches[maxTables][0]
-	}
-	first := strings.TrimSpace(md[:firstEnd])
-	if first != "" {
-		parts = append(parts, first)
-	}
-	for _, match := range matches[maxTables:] {
-		block := strings.TrimSpace(md[match[0]:match[1]])
-		if block != "" {
-			parts = append(parts, block)
-		}
-	}
-	return parts
-}
-
 // BuildRichCard implements core.RichCardSupporter. The engine pre-composes
 // statusFooter (multi-line, '\n'-separated) and passes it through; the renderer
 // splits it back into one dim notation block per line.
@@ -6448,17 +4818,10 @@ func (p *Platform) SetPreviewStatus(previewHandle any, status core.CardStatus) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := p.client.Im.Message.Patch(ctx, larkim.NewPatchMessageReqBuilder().
-		MessageId(h.messageID).
-		Body(larkim.NewPatchMessageReqBodyBuilder().
-			Content(cardJSON).
-			Build()).
-		Build())
-	if err != nil {
+	if err := p.sendAPI().patchMessageOnce(ctx, h.messageID, cardJSON, feishuMessageAPILabels{
+		network: "set preview status patch",
+		failed:  "set preview status patch",
+	}); err != nil {
 		slog.Debug("feishu: set preview status patch failed", "error", err)
-		return
-	}
-	if !resp.Success() {
-		slog.Debug("feishu: set preview status patch failed", "code", resp.Code, "msg", resp.Msg)
 	}
 }

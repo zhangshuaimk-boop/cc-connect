@@ -466,6 +466,41 @@ func TestHiddenToolEventsContractKeepsFinalAndHidesToolDetails(t *testing.T) {
 	t.Fatalf("texts = %#v, want final answer even when tool messages are hidden", texts)
 }
 
+func TestVisibleAgentEventOrderContract(t *testing.T) {
+	engine, agent, platform := newTurnEngine(t)
+	engine.SetDisplayConfig(core.DisplayCfg{
+		Mode:             "full",
+		ThinkingMessages: true,
+		ToolMessages:     true,
+		ThinkingMaxLen:   300,
+		ToolMaxLen:       500,
+	})
+	agent.session.blockFirstResult()
+
+	msg := turnMessage("preserve event order")
+	go engine.ReceiveMessage(platform, msg)
+	agent.session.waitRecords(t, 1)
+
+	agent.session.emit(core.Event{Type: core.EventThinking, Content: "step 1 thinking"})
+	agent.session.emit(core.Event{Type: core.EventToolUse, ToolName: "Bash", ToolInput: "echo ordered"})
+	agent.session.emit(core.Event{Type: core.EventToolResult, ToolName: "Bash", ToolResult: "step 3 result", ToolStatus: "completed"})
+	agent.session.releaseFirstResult(core.Event{Type: core.EventResult, Content: "step 4 final", InputTokens: 52000, Done: true})
+	platform.waitTextContaining(t, "step 4 final")
+
+	texts, _, _, _ := platform.snapshot()
+	joined := strings.Join(texts, "\n")
+	assertSubstringsInOrder(t, joined, []string{
+		"step 1 thinking",
+		"Bash",
+		"echo ordered",
+		"step 3 result",
+		"step 4 final",
+	})
+	if countContaining(texts, "step 4 final") != 1 {
+		t.Fatalf("texts = %#v, want exactly one final answer", texts)
+	}
+}
+
 func TestPermissionInteractionContractWhileAgentSendIsBlocked(t *testing.T) {
 	engine, agent, platform := newTurnEngine(t)
 	agent.session.blockFirstResult()
@@ -523,6 +558,61 @@ func TestPermissionInteractionContractWhileAgentSendIsBlocked(t *testing.T) {
 	}
 }
 
+func TestNonTerminalResultDoesNotFinishTurnContract(t *testing.T) {
+	engine, agent, platform := newTurnEngine(t)
+	agent.session.blockFirstResult()
+
+	msg := turnMessage("compact then continue")
+	go engine.ReceiveMessage(platform, msg)
+	agent.session.waitRecords(t, 1)
+
+	agent.session.emit(core.Event{
+		Type:    core.EventResult,
+		Content: "compaction checkpoint",
+		Done:    false,
+	})
+	assertNoTextContainingFor(t, platform, "compaction checkpoint", 150*time.Millisecond)
+
+	agent.session.emit(core.Event{Type: core.EventText, Content: "continued text after checkpoint"})
+	agent.session.releaseFirstResult(core.Event{Type: core.EventResult, Content: "terminal answer", InputTokens: 52000, Done: true})
+	platform.waitTextContaining(t, "terminal answer")
+
+	texts, _, _, _ := platform.snapshot()
+	joined := strings.Join(texts, "\n")
+	if strings.Contains(joined, "compaction checkpoint") {
+		t.Fatalf("texts = %#v, non-terminal result should not be sent as final output", texts)
+	}
+	if !strings.Contains(joined, "terminal answer") {
+		t.Fatalf("texts = %#v, want terminal answer after non-terminal result", texts)
+	}
+	if countContaining(texts, "terminal answer") != 1 {
+		t.Fatalf("texts = %#v, want exactly one terminal answer", texts)
+	}
+}
+
+func TestErrorTerminatesTurnAndIgnoresLateResultContract(t *testing.T) {
+	engine, agent, platform := newTurnEngine(t)
+	agent.session.blockFirstResult()
+
+	msg := turnMessage("fail this turn")
+	go engine.ReceiveMessage(platform, msg)
+	agent.session.waitRecords(t, 1)
+
+	agent.session.emit(core.Event{Type: core.EventError, Error: errors.New("tool failed hard")})
+	platform.waitTextContaining(t, "tool failed hard")
+
+	agent.session.emit(core.Event{Type: core.EventResult, Content: "late success", InputTokens: 52000, Done: true})
+	assertNoTextContainingFor(t, platform, "late success", 150*time.Millisecond)
+
+	texts, _, _, _ := platform.snapshot()
+	if countContaining(texts, "tool failed hard") != 1 {
+		t.Fatalf("texts = %#v, want exactly one error reply", texts)
+	}
+	if containsText(texts, "late success") {
+		t.Fatalf("texts = %#v, late result must not be delivered after error termination", texts)
+	}
+}
+
 func TestStreamingPreviewFinalizationContractExposesDuplicateFinalSend(t *testing.T) {
 	agent := newTurnAgent()
 	platform := &previewLifecyclePlatform{}
@@ -558,7 +648,7 @@ func TestStreamingPreviewFinalizationContractExposesDuplicateFinalSend(t *testin
 	}
 }
 
-func TestStreamingPreviewConfigurationMatrix(t *testing.T) {
+func TestStreamingPreviewConfigurationScenario(t *testing.T) {
 	tests := []struct {
 		name        string
 		cfg         core.StreamPreviewCfg
@@ -599,7 +689,7 @@ func TestStreamingPreviewConfigurationMatrix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			agent := newTurnAgent()
 			platform := &previewLifecyclePlatform{}
-			engine := core.NewEngine("release-preview-matrix", agent, []core.Platform{platform}, t.TempDir()+"/sessions.json", core.LangEnglish)
+			engine := core.NewEngine("release-preview-scenario", agent, []core.Platform{platform}, t.TempDir()+"/sessions.json", core.LangEnglish)
 			engine.SetReplyFooterEnabled(true)
 			engine.SetStreamPreviewCfg(tt.cfg)
 			t.Cleanup(func() {
@@ -608,7 +698,7 @@ func TestStreamingPreviewConfigurationMatrix(t *testing.T) {
 			})
 			agent.session.blockFirstResult()
 
-			msg := turnMessage("streaming config matrix")
+			msg := turnMessage("streaming config scenario")
 			go engine.ReceiveMessage(platform, msg)
 			agent.session.waitRecords(t, 1)
 
@@ -678,7 +768,7 @@ func TestStreamingPreviewMaxCharsOnlyTruncatesIntermediatePreview(t *testing.T) 
 	}
 }
 
-func TestReplyMetadataConfigurationMatrix(t *testing.T) {
+func TestReplyMetadataConfigurationScenario(t *testing.T) {
 	tests := []struct {
 		name       string
 		showCtx    bool
@@ -687,7 +777,7 @@ func TestReplyMetadataConfigurationMatrix(t *testing.T) {
 		forbid     []string
 	}{
 		{
-			name:       "context_and_footer_on_share_one_line",
+			name:       "context_and_footer_on_share_one_feishu",
 			showCtx:    true,
 			showFooter: true,
 			want:       []string{"answer", "[ctx: ~14%] · glm-5.1 · /tmp/release-agent"},
@@ -724,7 +814,7 @@ func TestReplyMetadataConfigurationMatrix(t *testing.T) {
 			engine.SetReplyFooterEnabled(tt.showFooter)
 			agent.session.setResult(core.Event{Type: core.EventResult, Content: "answer", InputTokens: 28000, Done: true})
 
-			engine.ReceiveMessage(platform, turnMessage("metadata matrix"))
+			engine.ReceiveMessage(platform, turnMessage("metadata scenario"))
 			platform.waitTextContaining(t, "answer")
 
 			texts, _, _, _ := platform.snapshot()
@@ -775,7 +865,7 @@ func TestLongFinalResponseKeepsMetadataOnceAtTail(t *testing.T) {
 	t.Fatalf("texts = %#v, want long response split into multiple chunks", texts)
 }
 
-func TestDisplayVisibilityConfigurationMatrix(t *testing.T) {
+func TestDisplayVisibilityConfigurationScenario(t *testing.T) {
 	tests := []struct {
 		name         string
 		thinking     bool
@@ -802,26 +892,26 @@ func TestDisplayVisibilityConfigurationMatrix(t *testing.T) {
 			})
 			agent.session.blockFirstResult()
 
-			msg := turnMessage("visibility matrix")
+			msg := turnMessage("visibility scenario")
 			go engine.ReceiveMessage(platform, msg)
 			agent.session.waitRecords(t, 1)
 
-			agent.session.emit(core.Event{Type: core.EventThinking, Content: "matrix thinking"})
+			agent.session.emit(core.Event{Type: core.EventThinking, Content: "scenario thinking"})
 			agent.session.emit(core.Event{Type: core.EventToolUse, ToolName: "Bash", ToolInput: "echo visible"})
 			agent.session.emit(core.Event{Type: core.EventToolResult, ToolName: "Bash", ToolResult: "visible output", ToolStatus: "completed"})
-			agent.session.releaseFirstResult(core.Event{Type: core.EventResult, Content: "matrix final", InputTokens: 52000, Done: true})
-			platform.waitTextContaining(t, "matrix final")
+			agent.session.releaseFirstResult(core.Event{Type: core.EventResult, Content: "scenario final", InputTokens: 52000, Done: true})
+			platform.waitTextContaining(t, "scenario final")
 
 			texts, _, _, _ := platform.snapshot()
 			joined := strings.Join(texts, "\n")
-			if got := strings.Contains(joined, "matrix thinking"); got != tt.wantThinking {
+			if got := strings.Contains(joined, "scenario thinking"); got != tt.wantThinking {
 				t.Fatalf("thinking visibility = %v, want %v; texts=%#v", got, tt.wantThinking, texts)
 			}
 			hasTool := strings.Contains(joined, "Bash") || strings.Contains(joined, "echo visible") || strings.Contains(joined, "visible output")
 			if hasTool != tt.wantTool {
 				t.Fatalf("tool visibility = %v, want %v; texts=%#v", hasTool, tt.wantTool, texts)
 			}
-			if countContaining(texts, "matrix final") != 1 {
+			if countContaining(texts, "scenario final") != 1 {
 				t.Fatalf("texts=%#v, want exactly one final answer", texts)
 			}
 		})
@@ -1043,4 +1133,28 @@ func containsText(texts []string, substr string) bool {
 		}
 	}
 	return false
+}
+
+func assertSubstringsInOrder(t *testing.T, text string, wants []string) {
+	t.Helper()
+	offset := 0
+	for _, want := range wants {
+		idx := strings.Index(text[offset:], want)
+		if idx < 0 {
+			t.Fatalf("text = %q, want %q after offset %d", text, want, offset)
+		}
+		offset += idx + len(want)
+	}
+}
+
+func assertNoTextContainingFor(t *testing.T, platform *turnPlatform, substr string, duration time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		texts, _, _, _ := platform.snapshot()
+		if containsText(texts, substr) {
+			t.Fatalf("texts = %#v, should not contain %q", texts, substr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

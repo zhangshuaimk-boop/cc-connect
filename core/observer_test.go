@@ -24,43 +24,43 @@ func (m *mockObserverTarget) SendObservation(ctx context.Context, channelID, tex
 func TestParseObservationLine(t *testing.T) {
 	tests := []struct {
 		name     string
-		line     string
+		feishu   string
 		wantType string
 		wantText string
 		wantSkip bool
 	}{
 		{
 			name:     "user message",
-			line:     `{"type":"user","message":{"role":"user","content":"hello world"},"entrypoint":"cli"}`,
+			feishu:   `{"type":"user","message":{"role":"user","content":"hello world"},"entrypoint":"cli"}`,
 			wantType: "user",
 			wantText: "hello world",
 		},
 		{
 			name:     "assistant text",
-			line:     `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]},"entrypoint":"cli"}`,
+			feishu:   `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]},"entrypoint":"cli"}`,
 			wantType: "assistant",
 			wantText: "hi there",
 		},
 		{
 			name:     "sdk-cli session skipped",
-			line:     `{"type":"user","message":{"role":"user","content":"hello"},"entrypoint":"sdk-cli"}`,
+			feishu:   `{"type":"user","message":{"role":"user","content":"hello"},"entrypoint":"sdk-cli"}`,
 			wantSkip: true,
 		},
 		{
 			name:     "tool_use skipped",
-			line:     `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"entrypoint":"cli"}`,
+			feishu:   `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"entrypoint":"cli"}`,
 			wantType: "assistant",
 			wantText: "",
 		},
 		{
 			name:     "non-message type skipped",
-			line:     `{"type":"system","sessionId":"abc123"}`,
+			feishu:   `{"type":"system","sessionId":"abc123"}`,
 			wantSkip: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			obs := parseObservationLine([]byte(tt.line))
+			obs := parseObservationLine([]byte(tt.feishu))
 			if tt.wantSkip {
 				if obs != nil {
 					t.Fatalf("expected nil, got %+v", obs)
@@ -105,15 +105,15 @@ func TestSessionObserverPoll(t *testing.T) {
 	}
 	obs.initOffsets()
 
-	// Append lines incrementally so offsets advance from EOF of the empty file.
+	// Append feishus incrementally so offsets advance from EOF of the empty file.
 	ctx := context.Background()
-	appendLine := func(line string) {
+	appendLine := func(feishu string) {
 		t.Helper()
 		f, err := os.OpenFile(sessionFile, os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.WriteString(line); err != nil {
+		if _, err := f.WriteString(feishu); err != nil {
 			f.Close()
 			t.Fatal(err)
 		}
@@ -206,7 +206,7 @@ func TestSessionObserverNewFileSkipsPreExistingLines(t *testing.T) {
 		t.Fatalf("expected 1 new message after append, got %d: %v", len(received), received)
 	}
 	if !strings.Contains(received[0], "fresh") {
-		t.Fatalf("expected appended line only, got %q", received[0])
+		t.Fatalf("expected appended feishu only, got %q", received[0])
 	}
 }
 

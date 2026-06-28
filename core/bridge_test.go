@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -550,6 +551,128 @@ func TestBridge_CardNative(t *testing.T) {
 	header, _ := cardData["header"].(map[string]any)
 	if header["title"] != "Test" {
 		t.Fatalf("card title = %q, want Test", header["title"])
+	}
+}
+
+func TestBridge_ButtonsTypingAndMediaMessages(t *testing.T) {
+	bs, wsURL := startTestBridge(t, "")
+	bp := bs.NewPlatform("test-proj")
+	conn := dialWS(t, wsURL, nil)
+	register(t, conn, "bridge", []string{"text", "buttons", "typing", "image", "file", "audio", "video"})
+	replyCtx := &bridgeReplyCtx{
+		Platform:   "bridge",
+		SessionKey: "bridge:room-1:user-1",
+		ReplyCtx:   "ctx-1",
+	}
+
+	buttons := [][]ButtonOption{{{Text: "Run", Data: "cmd:/run"}}}
+	if err := bp.SendWithButtons(context.Background(), replyCtx, "choose", buttons); err != nil {
+		t.Fatalf("SendWithButtons() error = %v", err)
+	}
+	msg := readMsg(t, conn)
+	if msg["type"] != "buttons" || msg["content"] != "choose" {
+		t.Fatalf("buttons message = %#v", msg)
+	}
+	if _, ok := msg["buttons"].([]any); !ok {
+		t.Fatalf("buttons payload = %T, want array", msg["buttons"])
+	}
+
+	stopTyping := bp.StartTyping(context.Background(), replyCtx)
+	msg = readMsg(t, conn)
+	if msg["type"] != "typing_start" {
+		t.Fatalf("typing start message = %#v", msg)
+	}
+	stopTyping()
+	msg = readMsg(t, conn)
+	if msg["type"] != "typing_stop" {
+		t.Fatalf("typing stop message = %#v", msg)
+	}
+
+	if err := bp.SendImage(context.Background(), replyCtx, ImageAttachment{MimeType: "image/png", Data: []byte("img"), FileName: "a.png"}); err != nil {
+		t.Fatalf("SendImage() error = %v", err)
+	}
+	msg = readMsg(t, conn)
+	if msg["type"] != "image" || msg["mime_type"] != "image/png" || msg["file_name"] != "a.png" {
+		t.Fatalf("image message = %#v", msg)
+	}
+	if got, want := msg["data"], base64.StdEncoding.EncodeToString([]byte("img")); got != want {
+		t.Fatalf("image data = %v, want %q", got, want)
+	}
+
+	if err := bp.SendFile(context.Background(), replyCtx, FileAttachment{MimeType: "text/plain", Data: []byte("file"), FileName: "a.txt"}); err != nil {
+		t.Fatalf("SendFile() error = %v", err)
+	}
+	msg = readMsg(t, conn)
+	if msg["type"] != "file" || msg["mime_type"] != "text/plain" || msg["file_name"] != "a.txt" {
+		t.Fatalf("file message = %#v", msg)
+	}
+
+	if err := bp.SendAudio(context.Background(), replyCtx, []byte("aud"), "mp3"); err != nil {
+		t.Fatalf("SendAudio() error = %v", err)
+	}
+	msg = readMsg(t, conn)
+	if msg["type"] != "audio" || msg["format"] != "mp3" {
+		t.Fatalf("audio message = %#v", msg)
+	}
+
+	if err := bp.SendVideo(context.Background(), replyCtx, []byte("vid"), "mp4", "clip.mp4"); err != nil {
+		t.Fatalf("SendVideo() error = %v", err)
+	}
+	msg = readMsg(t, conn)
+	if msg["type"] != "video" || msg["format"] != "mp4" || msg["file_name"] != "clip.mp4" {
+		t.Fatalf("video message = %#v", msg)
+	}
+}
+
+func TestBridge_ButtonsAndMediaCapabilitiesReturnNotSupported(t *testing.T) {
+	bs, wsURL := startTestBridge(t, "")
+	bp := bs.NewPlatform("test-proj")
+	conn := dialWS(t, wsURL, nil)
+	register(t, conn, "bridge", []string{"text"})
+	replyCtx := &bridgeReplyCtx{
+		Platform:   "bridge",
+		SessionKey: "bridge:room-1:user-1",
+		ReplyCtx:   "ctx-1",
+	}
+
+	if err := bp.SendWithButtons(context.Background(), replyCtx, "plain", [][]ButtonOption{{{Text: "Run", Data: "cmd:/run"}}}); err != nil {
+		t.Fatalf("SendWithButtons() fallback error = %v", err)
+	}
+	msg := readMsg(t, conn)
+	if msg["type"] != "reply" || msg["content"] != "plain" {
+		t.Fatalf("button fallback message = %#v", msg)
+	}
+
+	stopTyping := bp.StartTyping(context.Background(), replyCtx)
+	stopTyping()
+	if err := conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	var noTyping map[string]any
+	if err := conn.ReadJSON(&noTyping); err == nil {
+		t.Fatalf("unexpected typing message without capability: %#v", noTyping)
+	}
+
+	if err := bp.UpdateMessage(context.Background(), replyCtx, "new"); !errors.Is(err, ErrNotSupported) {
+		t.Fatalf("UpdateMessage() error = %v, want ErrNotSupported", err)
+	}
+	if err := bp.DeletePreviewMessage(context.Background(), replyCtx); !errors.Is(err, ErrNotSupported) {
+		t.Fatalf("DeletePreviewMessage() error = %v, want ErrNotSupported", err)
+	}
+	if _, err := bp.SendPreviewStart(context.Background(), replyCtx, "preview"); !errors.Is(err, ErrNotSupported) {
+		t.Fatalf("SendPreviewStart() error = %v, want ErrNotSupported", err)
+	}
+	if err := bp.SendImage(context.Background(), replyCtx, ImageAttachment{Data: []byte("img")}); !errors.Is(err, ErrNotSupported) {
+		t.Fatalf("SendImage() error = %v, want ErrNotSupported", err)
+	}
+	if err := bp.SendFile(context.Background(), replyCtx, FileAttachment{Data: []byte("file")}); !errors.Is(err, ErrNotSupported) {
+		t.Fatalf("SendFile() error = %v, want ErrNotSupported", err)
+	}
+	if err := bp.SendAudio(context.Background(), replyCtx, []byte("aud"), "mp3"); !errors.Is(err, ErrNotSupported) {
+		t.Fatalf("SendAudio() error = %v, want ErrNotSupported", err)
+	}
+	if err := bp.SendVideo(context.Background(), replyCtx, []byte("vid"), "mp4", "clip.mp4"); !errors.Is(err, ErrNotSupported) {
+		t.Fatalf("SendVideo() error = %v, want ErrNotSupported", err)
 	}
 }
 

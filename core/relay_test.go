@@ -354,6 +354,114 @@ func TestRelayManager_VisibilityNoneSuppressesGroupEcho(t *testing.T) {
 	}
 }
 
+type relaySendFailPlatform struct {
+	relayVisibilityPlatform
+}
+
+func (p *relaySendFailPlatform) Send(context.Context, any, string) error {
+	return errors.New("visibility echo failed")
+}
+
+func TestRelayManager_GroupEchoSendFailureDoesNotFailRelay(t *testing.T) {
+	sourcePlatform := &relaySendFailPlatform{
+		relayVisibilityPlatform: relayVisibilityPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}},
+	}
+	targetPlatform := &relayVisibilityPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	sourceEngine := NewEngine("source", &stubAgent{}, []Platform{sourcePlatform}, "", LangEnglish)
+	targetSession := newControllableSession("target-session")
+	targetEngine := NewEngine("target", &controllableAgent{nextSession: targetSession}, []Platform{targetPlatform}, "", LangEnglish)
+
+	rm := NewRelayManager("")
+	rm.Bind("feishu", "chat-1", map[string]string{
+		"source": "source-bot",
+		"target": "target-bot",
+	})
+	rm.RegisterEngine("source", sourceEngine)
+	rm.RegisterEngine("target", targetEngine)
+
+	done := make(chan struct {
+		resp *RelayResponse
+		err  error
+	}, 1)
+	go func() {
+		resp, err := rm.Send(context.Background(), RelayRequest{
+			From:       "source",
+			To:         "target",
+			SessionKey: "feishu:chat-1:user-1",
+			Message:    "please relay",
+		})
+		done <- struct {
+			resp *RelayResponse
+			err  error
+		}{resp: resp, err: err}
+	}()
+	targetSession.events <- Event{Type: EventResult, Content: "target response", Done: true}
+
+	var got struct {
+		resp *RelayResponse
+		err  error
+	}
+	select {
+	case got = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RelayManager.Send() did not return")
+	}
+	if got.err != nil {
+		t.Fatalf("RelayManager.Send() error = %v, want nil despite echo failure", got.err)
+	}
+	if got.resp == nil || got.resp.Response != "target response" {
+		t.Fatalf("RelayManager.Send() response = %#v, want target response", got.resp)
+	}
+	if len(sourcePlatform.getSent()) != 0 {
+		t.Fatalf("source sent = %#v, want failed echo not recorded", sourcePlatform.getSent())
+	}
+	if sent := targetPlatform.getSent(); len(sent) != 1 || sent[0] != "[target-bot] target response" {
+		t.Fatalf("target sent = %#v, want response visibility echo", sent)
+	}
+}
+
+func TestRelayManager_SendValidatesBindingAndTargets(t *testing.T) {
+	rm := NewRelayManager("")
+
+	if _, err := rm.Send(context.Background(), RelayRequest{
+		From:       "source",
+		To:         "target",
+		SessionKey: "bad-key",
+		Message:    "hello",
+	}); err == nil || !strings.Contains(err.Error(), "invalid session key") {
+		t.Fatalf("invalid session key error = %v, want invalid session key", err)
+	}
+
+	if _, err := rm.Send(context.Background(), RelayRequest{
+		From:       "source",
+		To:         "target",
+		SessionKey: "feishu:chat-1:user-1",
+		Message:    "hello",
+	}); err == nil || !strings.Contains(err.Error(), "no binding") {
+		t.Fatalf("missing binding error = %v, want no binding", err)
+	}
+
+	rm.Bind("feishu", "chat-1", map[string]string{"source": "source-bot"})
+	if _, err := rm.Send(context.Background(), RelayRequest{
+		From:       "source",
+		To:         "target",
+		SessionKey: "feishu:chat-1:user-1",
+		Message:    "hello",
+	}); err == nil || !strings.Contains(err.Error(), "is not bound") {
+		t.Fatalf("unbound target error = %v, want target not bound", err)
+	}
+
+	rm.Bind("feishu", "chat-1", map[string]string{"source": "source-bot", "target": "target-bot"})
+	if _, err := rm.Send(context.Background(), RelayRequest{
+		From:       "source",
+		To:         "target",
+		SessionKey: "feishu:chat-1:user-1",
+		Message:    "hello",
+	}); err == nil || !strings.Contains(err.Error(), "target engine") {
+		t.Fatalf("missing target engine error = %v, want target engine error", err)
+	}
+}
+
 func TestHandleRelay_ReturnsPartialOnTimeout(t *testing.T) {
 	e := newTestEngine()
 	session := newControllableSession("relay-session")
@@ -500,7 +608,7 @@ func TestHandleRelay_SingleWorkspaceUsesGlobalAgentAndSourceSessionKey(t *testin
 	agent := &sessionEnvRecordingAgent{session: newResultAgentSession("global")}
 	e.agent = agent
 
-	sourceSessionKey := "discord:C1:U1"
+	sourceSessionKey := "feishu:C1:U1"
 	resp, err := e.HandleRelay(context.Background(), "source", sourceSessionKey, "hello")
 	if err != nil {
 		t.Fatalf("HandleRelay() error = %v", err)
@@ -511,7 +619,7 @@ func TestHandleRelay_SingleWorkspaceUsesGlobalAgentAndSourceSessionKey(t *testin
 	if got := agent.EnvValue("CC_SESSION_KEY"); got != sourceSessionKey {
 		t.Fatalf("CC_SESSION_KEY = %q, want %q", got, sourceSessionKey)
 	}
-	if got := e.sessions.ActiveSessionID("relay:source:discord:C1"); got == "" {
+	if got := e.sessions.ActiveSessionID("relay:source:feishu:C1"); got == "" {
 		t.Fatal("expected relay session to be stored under platform-qualified relay key")
 	}
 }

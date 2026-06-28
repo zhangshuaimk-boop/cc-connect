@@ -133,8 +133,7 @@ type PreviewStarter interface {
 }
 
 // PreviewCleaner is an optional interface for platforms that need to clean up
-// the preview message after the final response is sent (e.g. Discord deletes
-// the preview and sends a fresh message).
+// the preview message after the final response is sent.
 type PreviewCleaner interface {
 	DeletePreviewMessage(ctx context.Context, previewHandle any) error
 }
@@ -428,8 +427,7 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 	// been rendered yet, and dropping the call would silently lose it.
 	// Only skip when lastSentViaUpdate is true — if the text was only sent
 	// via SendPreviewStart (first flush), we must still call UpdateMessage
-	// because it may apply different formatting (e.g. Markdown→HTML for
-	// Telegram).
+	// because it may apply different platform-specific formatting.
 	if finalText == sp.lastSentText && sp.lastSentViaUpdate && statusFooter == "" {
 		slog.Debug("stream preview finish: text unchanged and no footer, skipping",
 			"text_len", len(finalText))

@@ -246,9 +246,6 @@ func main() {
 		case "feishu":
 			runFeishu(os.Args[2:])
 			return
-		case "weixin":
-			runWeixin(os.Args[2:])
-			return
 		case "doctor":
 			runDoctor(os.Args[2:])
 			return
@@ -281,8 +278,8 @@ func main() {
 
 	configFlag := flag.String("config", "", "path to config file (default: ./config.toml or ~/.cc-connect/config.toml)")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	observeFlag := flag.Bool("observe", false, "observe native terminal Claude Code sessions and forward to Slack")
-	observeChannel := flag.String("observe-channel", "", "Slack channel ID to forward terminal observations to (requires --observe)")
+	observeFlag := flag.Bool("observe", false, "observe native terminal Claude Code sessions and forward to the observer target")
+	observeChannel := flag.String("observe-channel", "", "channel ID to forward terminal observations to (requires --observe)")
 	forceFlag := flag.Bool("force", false, "kill any existing instance with the same config before starting")
 	logMaxSizeFlag := flag.String("log-max-size", "", "max bytes for the rotating log file (e.g. 10MB, 512K, 10485760); overrides CC_LOG_MAX_SIZE env var (default: 10MB)")
 	logMaxBackupsFlag := flag.Int("log-max-backups", 0, "number of rotated log files to retain (.log.1 .. .log.N); overrides CC_LOG_MAX_BACKUPS env var (default: 3)")
@@ -500,21 +497,23 @@ func main() {
 				slog.Error("observe: channel is required (use --observe-channel or set channel in [projects.observe])")
 				os.Exit(1)
 			}
-			hasSlack := false
+			hasObserverTarget := false
+			observePlatform := ""
 			for _, p := range platforms {
-				if p.Name() == "slack" {
-					hasSlack = true
+				if _, ok := p.(core.ObserverTarget); ok {
+					hasObserverTarget = true
+					observePlatform = p.Name()
 					break
 				}
 			}
-			if !hasSlack {
-				slog.Warn("observe requires a Slack platform; ignoring")
+			if !hasObserverTarget {
+				slog.Warn("observe requires a platform that supports observation; ignoring")
 			} else {
 				projectDir := resolveClaudeProjectDir(workDir)
 				if projectDir == "" {
 					slog.Warn("observe: could not find Claude Code project directory", "workDir", workDir)
 				} else {
-					sessionKey := fmt.Sprintf("slack:%s", obsChan)
+					sessionKey := fmt.Sprintf("%s:%s", observePlatform, obsChan)
 					engine.SetObserveConfig(projectDir, sessionKey)
 				}
 			}
@@ -719,7 +718,7 @@ func main() {
 		resetIdle, defaulted := resolveResetOnIdle(proj.ResetOnIdleMins)
 		engine.SetResetOnIdle(resetIdle)
 		if defaulted {
-			slog.Info("project: reset_on_idle_mins not set, applying default — set reset_on_idle_mins = 0 to opt out, see docs/usage.md",
+			slog.Info("project: reset_on_idle_mins not set, applying default — set reset_on_idle_mins = 0 to opt out",
 				"project", proj.Name, "default_minutes", defaultResetOnIdleMins)
 		}
 
@@ -1139,25 +1138,6 @@ func main() {
 			})
 			return err
 		})
-		mgmtSrv.SetSetupWeixinSave(func(req core.WeixinSetupSaveRequest) error {
-			_, err := config.EnsureProjectWithWeixinPlatform(config.EnsureProjectWithWeixinOptions{
-				ProjectName: req.ProjectName,
-				WorkDir:     req.WorkDir,
-				AgentType:   req.AgentType,
-			})
-			if err != nil {
-				return fmt.Errorf("ensure project: %w", err)
-			}
-			_, err = config.SaveWeixinPlatformCredentials(config.WeixinCredentialUpdateOptions{
-				ProjectName:       req.ProjectName,
-				Token:             req.Token,
-				BaseURL:           req.BaseURL,
-				AccountID:         req.IlinkBotID,
-				ScannedUserID:     req.IlinkUserID,
-				SetAllowFromEmpty: true,
-			})
-			return err
-		})
 		mgmtSrv.SetAddPlatformToProject(func(projectName, platType string, opts map[string]any, workDir, agentType string) error {
 			if opts == nil {
 				opts = map[string]any{}
@@ -1308,7 +1288,7 @@ func main() {
 	// After startup, check if we were restarted and queue the success
 	// notification. The engine dispatches it on the first OnPlatformReady
 	// for the target platform (or with a 10s safety timeout), so async
-	// platforms that need 2-3s to actually connect (e.g. Telegram) do not
+	// platforms that need a short async connect window do not
 	// silently drop the notify. See issue #1383.
 	if notify := core.ConsumeRestartNotify(cfg.DataDir); notify != nil {
 		slog.Info("post-restart: queuing success notification", "platform", notify.Platform, "session", notify.SessionKey)
@@ -1531,8 +1511,7 @@ type = "feishu"
 app_id = "your-feishu-app-id"
 app_secret = "your-feishu-app-secret"
 
-# For more platforms (DingTalk, Telegram, Slack, Discord, LINE, WeChat Work)
-# see: https://github.com/chenhg5/cc-connect/blob/main/config.example.toml
+# Feishu/Lark is the only supported platform in this build
 `
 	return os.WriteFile(path, []byte(tmpl), 0o644)
 }
@@ -1555,7 +1534,7 @@ func printUsage() {
 
   Bridge your messaging platforms to local AI coding agents.
   Supports: Claude Code, Codex, Cursor, Gemini CLI, Qoder CLI, OpenCode
-  Platforms: Feishu, Telegram, Slack, DingTalk, Discord, LINE, WeChat Work, Weixin, QQ, QQ Bot
+  Platform: Feishu / Lark
 
   GitHub:  https://github.com/chenhg5/cc-connect
   Docs:    https://github.com/chenhg5/cc-connect/blob/main/INSTALL.md
@@ -1609,11 +1588,6 @@ Commands:
     new              Force QR onboarding to create a new bot
     bind             Bind existing app_id/app_secret
 
-  weixin             Setup Weixin personal (ilink) via QR or token
-    setup            QR login, or bind when --token is provided
-    new              Force QR login
-    bind             Bind existing ilink bot token
-
   config             Manage configuration
     example          Print a complete annotated config.toml example
     format           Format the config file (alias: fmt)
@@ -1631,7 +1605,6 @@ Examples:
   cc-connect send -m "hello"          Send a message to the active session
   cc-connect cron list                List all scheduled tasks
   cc-connect feishu setup             Setup Feishu/Lark bot credentials
-  cc-connect weixin setup             Setup Weixin (ilink) with QR or --token
   cc-connect update                   Update to the latest version
   cc-connect config format            Format the config file
   cc-connect config example > c.toml  Save example config to a file
@@ -1726,7 +1699,7 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 	resetIdle, defaulted := resolveResetOnIdle(proj.ResetOnIdleMins)
 	engine.SetResetOnIdle(resetIdle)
 	if defaulted {
-		slog.Info("project: reset_on_idle_mins not set, applying default — set reset_on_idle_mins = 0 to opt out, see docs/usage.md",
+		slog.Info("project: reset_on_idle_mins not set, applying default — set reset_on_idle_mins = 0 to opt out",
 			"project", proj.Name, "default_minutes", defaultResetOnIdleMins)
 	}
 

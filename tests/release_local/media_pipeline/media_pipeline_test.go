@@ -1,8 +1,10 @@
-package media_pipeline
+package media_pipefeishu
 
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -151,11 +153,13 @@ func (s *recordingSession) waitRecords(t *testing.T, n int) []sendRecord {
 }
 
 type mediaPlatform struct {
-	mu       sync.Mutex
-	texts    []string
-	images   []core.ImageAttachment
-	files    []core.FileAttachment
-	replyCtx []any
+	mu           sync.Mutex
+	texts        []string
+	images       []core.ImageAttachment
+	files        []core.FileAttachment
+	replyCtx     []any
+	sendImageErr error
+	sendFileErr  error
 }
 
 func (p *mediaPlatform) Name() string { return "media" }
@@ -176,6 +180,9 @@ func (p *mediaPlatform) Send(_ context.Context, replyCtx any, content string) er
 func (p *mediaPlatform) SendImage(_ context.Context, replyCtx any, img core.ImageAttachment) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.sendImageErr != nil {
+		return p.sendImageErr
+	}
 	p.images = append(p.images, img)
 	p.replyCtx = append(p.replyCtx, replyCtx)
 	return nil
@@ -183,6 +190,9 @@ func (p *mediaPlatform) SendImage(_ context.Context, replyCtx any, img core.Imag
 func (p *mediaPlatform) SendFile(_ context.Context, replyCtx any, file core.FileAttachment) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.sendFileErr != nil {
+		return p.sendFileErr
+	}
 	p.files = append(p.files, file)
 	p.replyCtx = append(p.replyCtx, replyCtx)
 	return nil
@@ -218,12 +228,38 @@ func newMediaEngine(t *testing.T) (*core.Engine, *recordingAgent, *mediaPlatform
 	t.Helper()
 	agent := newRecordingAgent()
 	platform := &mediaPlatform{}
-	engine := core.NewEngine("release-media", agent, []core.Platform{platform}, t.TempDir()+"/sessions.json", core.LangEnglish)
+	engineDir := filepath.Join(os.TempDir(), "cc-connect-media-pipeline-"+strings.ReplaceAll(t.Name(), "/", "-")+"-"+time.Now().Format("20060102150405.000000000"))
+	if err := os.MkdirAll(engineDir, 0o755); err != nil {
+		t.Fatalf("create media engine temp dir: %v", err)
+	}
+	engine := core.NewEngine("release-media", agent, []core.Platform{platform}, filepath.Join(engineDir, "sessions.json"), core.LangEnglish)
 	t.Cleanup(func() {
-		engine.Stop()
+		_ = engine.Stop()
 		_ = agent.Stop()
+		removeDirEventually(t, engineDir)
 	})
 	return engine, agent, platform
+}
+
+func removeDirEventually(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var err error
+	for time.Now().Before(deadline) {
+		err = os.RemoveAll(dir)
+		if err == nil {
+			if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("remove media engine temp dir %s: %v", dir, err)
+	}
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Fatalf("media engine temp dir %s still exists after cleanup: %v", dir, statErr)
+	}
 }
 
 func mediaMessage(content string) *core.Message {
@@ -295,6 +331,7 @@ func TestQueuedMessagePreservesFiles(t *testing.T) {
 	if len(records[1].files) != 1 || records[1].files[0].FileName != "queued.txt" || string(records[1].files[0].Data) != "queued-file" {
 		t.Fatalf("queued file not preserved: %#v", records[1].files)
 	}
+	platform.waitTextContaining(t, "media ok")
 }
 
 func TestSendToSessionWithAttachmentsDeliversTextImagesAndFiles(t *testing.T) {
@@ -328,6 +365,71 @@ func TestSendToSessionWithAttachmentsDeliversTextImagesAndFiles(t *testing.T) {
 		if ctx != "reply-ctx-1" {
 			t.Fatalf("reply context = %#v, want original reply context", replyCtx)
 		}
+	}
+}
+
+func TestSendToSessionWithAttachmentsReturnsUploadFailureAfterTextFallback(t *testing.T) {
+	engine, agent, platform := newMediaEngine(t)
+	msg := mediaMessage("establish active session")
+	engine.ReceiveMessage(platform, msg)
+	agent.session.waitRecords(t, 1)
+	platform.waitTextContaining(t, "media ok")
+
+	uploadErr := errors.New("fake upload failed")
+	platform.sendFileErr = uploadErr
+
+	err := engine.SendToSessionWithAttachments(
+		msg.SessionKey,
+		"file is available as text fallback",
+		[]core.ImageAttachment{{MimeType: "image/png", FileName: "before-file.png", Data: []byte("image")}},
+		[]core.FileAttachment{{MimeType: "text/plain", FileName: "fails.txt", Data: []byte("file")}},
+		nil, false)
+	if !errors.Is(err, uploadErr) {
+		t.Fatalf("SendToSessionWithAttachments() error = %v, want upload failure", err)
+	}
+
+	texts, images, files, replyCtx := platform.snapshot()
+	if !containsText(texts, "file is available as text fallback") {
+		t.Fatalf("texts = %#v, want text fallback sent before upload failure", texts)
+	}
+	if len(images) != 1 || images[0].FileName != "before-file.png" {
+		t.Fatalf("images = %#v, want image before failed file upload", images)
+	}
+	if len(files) != 0 {
+		t.Fatalf("files = %#v, want failed upload not recorded", files)
+	}
+	for _, ctx := range replyCtx {
+		if ctx != "reply-ctx-1" {
+			t.Fatalf("reply context = %#v, want original reply context", replyCtx)
+		}
+	}
+}
+
+func TestTextFallbackReferencesSavedFilesWhenPromptIsEmpty(t *testing.T) {
+	workDir := t.TempDir()
+	paths := core.SaveFilesToDisk(workDir, []core.FileAttachment{
+		{MimeType: "text/plain", FileName: "notes.txt", Data: []byte("release notes")},
+		{MimeType: "application/json", FileName: "../unsafe.json", Data: []byte(`{"ok":true}`)},
+	})
+	if len(paths) != 2 {
+		t.Fatalf("SaveFilesToDisk() paths = %#v, want two saved files", paths)
+	}
+
+	prompt := core.AppendFileRefs("", paths)
+	if !strings.Contains(prompt, "Please analyze the attached file(s).") {
+		t.Fatalf("prompt = %q, want attachment-only fallback text", prompt)
+	}
+	if !strings.Contains(prompt, "Files saved locally, please read them:") {
+		t.Fatalf("prompt = %q, want local file reference list", prompt)
+	}
+	if !strings.Contains(prompt, ".cc-connect/attachments/notes.txt") {
+		t.Fatalf("prompt = %q, want notes.txt reference", prompt)
+	}
+	if strings.Contains(prompt, "../unsafe.json") {
+		t.Fatalf("prompt = %q, unsafe path traversal reference leaked", prompt)
+	}
+	if !strings.Contains(prompt, ".cc-connect/attachments/unsafe.json") {
+		t.Fatalf("prompt = %q, want sanitized unsafe.json reference", prompt)
 	}
 }
 

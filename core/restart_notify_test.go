@@ -100,14 +100,14 @@ func (p *restartNotifyStub) waitForSent(t *testing.T, n int, timeout time.Durati
 // issue #1383 fix: the post-restart notify must wait for the
 // platform to be ready, not fire immediately at startup.
 func TestRestartNotify_DispatchesAfterPlatformReady(t *testing.T) {
-	plat := &restartNotifyStub{name: "telegram"}
+	plat := &restartNotifyStub{name: "feishu"}
 	engine := NewEngine("test", &stubAgent{}, []Platform{plat}, "", LangEnglish)
 
 	// Queue the notify BEFORE marking ready — this mirrors the real
 	// startup order in cmd/cc-connect/main.go where SetPendingRestartNotify
 	// is called right after e.Start() returns.
 	engine.SetPendingRestartNotify(&RestartRequest{
-		Platform:   "telegram",
+		Platform:   "feishu",
 		SessionKey: "session-1",
 	})
 
@@ -117,7 +117,7 @@ func TestRestartNotify_DispatchesAfterPlatformReady(t *testing.T) {
 		t.Fatalf("notify fired before platform ready: %v", got)
 	}
 
-	// Simulate the 2.6s Telegram connect window described in the issue.
+	// Simulate the 2.6s Feishu connect window described in the issue.
 	time.Sleep(300 * time.Millisecond) // simulate async startup delay
 	plat.markReady(t, engine)
 
@@ -162,14 +162,14 @@ func TestRestartNotify_AlreadyReadySucceedsImmediately(t *testing.T) {
 // first attempt fails, second attempt succeeds, message lands.
 func TestRestartNotify_RetriesOnSendFailure(t *testing.T) {
 	plat := &restartNotifyStub{
-		name:       "telegram",
+		name:       "feishu",
 		failFirstN: 1, // fail first attempt, succeed on second
 	}
 	engine := NewEngine("test", &stubAgent{}, []Platform{plat}, "", LangEnglish)
 	plat.markReady(t, engine)
 
 	engine.SetPendingRestartNotify(&RestartRequest{
-		Platform:   "telegram",
+		Platform:   "feishu",
 		SessionKey: "session-1",
 	})
 
@@ -185,14 +185,14 @@ func TestRestartNotify_RetriesOnSendFailure(t *testing.T) {
 // and clears the pending slot.
 func TestRestartNotify_ExhaustsRetriesNoHang(t *testing.T) {
 	plat := &restartNotifyStub{
-		name:       "telegram",
+		name:       "feishu",
 		failFirstN: 100, // effectively never succeed within 3 attempts
 	}
 	engine := NewEngine("test", &stubAgent{}, []Platform{plat}, "", LangEnglish)
 	plat.markReady(t, engine)
 
 	engine.SetPendingRestartNotify(&RestartRequest{
-		Platform:   "telegram",
+		Platform:   "feishu",
 		SessionKey: "session-1",
 	})
 
@@ -215,12 +215,12 @@ func TestRestartNotify_ExhaustsRetriesNoHang(t *testing.T) {
 // Uses a short timeout via SetPendingRestartTimeout to keep the
 // test fast.
 func TestRestartNotify_TimesOutIfPlatformNeverReady(t *testing.T) {
-	plat := &restartNotifyStub{name: "telegram"} // never marked ready
+	plat := &restartNotifyStub{name: "feishu"} // never marked ready
 	engine := NewEngine("test", &stubAgent{}, []Platform{plat}, "", LangEnglish)
 	engine.SetPendingRestartTimeout(300 * time.Millisecond)
 
 	engine.SetPendingRestartNotify(&RestartRequest{
-		Platform:   "telegram",
+		Platform:   "feishu",
 		SessionKey: "session-1",
 	})
 
@@ -245,7 +245,7 @@ func TestRestartNotify_TimesOutIfPlatformNeverReady(t *testing.T) {
 // a nil notify to SetPendingRestartNotify should be a no-op (does
 // not panic, does not crash the engine).
 func TestRestartNotify_NilNotifyIgnored(t *testing.T) {
-	plat := &restartNotifyStub{name: "telegram"}
+	plat := &restartNotifyStub{name: "feishu"}
 	engine := NewEngine("test", &stubAgent{}, []Platform{plat}, "", LangEnglish)
 	plat.markReady(t, engine)
 

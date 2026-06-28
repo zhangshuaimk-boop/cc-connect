@@ -111,7 +111,7 @@ func TestConfigValidate(t *testing.T) {
 						p := validProject("demo")
 						p.References = ReferenceConfig{
 							NormalizeAgents: []string{"codex", "claudecode"},
-							RenderPlatforms: []string{"feishu", "weixin"},
+							RenderPlatforms: []string{"feishu"},
 							DisplayPath:     "dirname_basename",
 							MarkerStyle:     "emoji",
 							EnclosureStyle:  "code",
@@ -140,12 +140,12 @@ func TestConfigValidate(t *testing.T) {
 				Projects: []ProjectConfig{
 					func() ProjectConfig {
 						p := validProject("demo")
-						p.References.RenderPlatforms = []string{"telegram"}
+						p.References.RenderPlatforms = []string{"unsupported-platform"}
 						return p
 					}(),
 				},
 			},
-			wantErr: `projects[0].references.render_platforms has unsupported value "telegram"`,
+			wantErr: `projects[0].references.render_platforms has unsupported value "unsupported-platform"`,
 		},
 		{
 			name: "rejects unsupported reference display path",
@@ -481,6 +481,48 @@ func TestEffectiveHistoryMaxLen(t *testing.T) {
 	}
 }
 
+func TestEffectiveShell(t *testing.T) {
+	cfg := &Config{Shell: "/bin/zsh", ShellProfile: "source ~/.zshrc"}
+	proj := &ProjectConfig{}
+
+	shell, flag, profile := EffectiveShell(cfg, proj)
+	if shell != "/bin/zsh" || flag != "-c" || profile != "source ~/.zshrc" {
+		t.Fatalf("EffectiveShell(global) = (%q, %q, %q)", shell, flag, profile)
+	}
+
+	proj.Shell = "pwsh"
+	proj.ShellProfile = "$PROFILE"
+	shell, flag, profile = EffectiveShell(cfg, proj)
+	if shell != "pwsh" || flag != "-Command" || profile != "$PROFILE" {
+		t.Fatalf("EffectiveShell(project pwsh) = (%q, %q, %q)", shell, flag, profile)
+	}
+
+	proj.Shell = "cmd.exe"
+	shell, flag, _ = EffectiveShell(cfg, proj)
+	if flag != "/C" {
+		t.Fatalf("EffectiveShell(cmd.exe) flag = %q, want /C", flag)
+	}
+}
+
+func TestEffectiveCardMode(t *testing.T) {
+	rich := " rich "
+	legacy := "legacy"
+	invalid := "modern"
+
+	if got := EffectiveCardMode(&Config{}, nil); got != "legacy" {
+		t.Fatalf("default card mode = %q, want legacy", got)
+	}
+	if got := EffectiveCardMode(&Config{Display: DisplayConfig{CardMode: &rich}}, nil); got != "rich" {
+		t.Fatalf("global card mode = %q, want rich", got)
+	}
+	if got := EffectiveCardMode(&Config{Display: DisplayConfig{CardMode: &rich}}, &ProjectConfig{Display: &DisplayConfig{CardMode: &legacy}}); got != "legacy" {
+		t.Fatalf("project card mode = %q, want legacy", got)
+	}
+	if got := EffectiveCardMode(&Config{Display: DisplayConfig{CardMode: &invalid}}, &ProjectConfig{Display: &DisplayConfig{CardMode: &invalid}}); got != "legacy" {
+		t.Fatalf("invalid card mode = %q, want legacy", got)
+	}
+}
+
 func TestValidateProjectDisplayConfig(t *testing.T) {
 	mode := "verbose"
 	cardMode := "modern"
@@ -547,7 +589,7 @@ func TestLoad_ResolvesEnvPlaceholders(t *testing.T) {
 
 	root := t.TempDir()
 	t.Setenv("CC_ROOT", root)
-	t.Setenv("TG_TOKEN", "tg-secret")
+	t.Setenv("FEISHU_APP_ID", "cli_test_app")
 	t.Setenv("HOOK_TOKEN", "hook-secret")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7890")
@@ -578,10 +620,10 @@ func TestLoad_ResolvesEnvPlaceholders(t *testing.T) {
  HTTP_PROXY = "${HTTP_PROXY}"
 
  [[projects.platforms]]
- type = "telegram"
+ type = "feishu"
 
  [projects.platforms.options]
- token = "${TG_TOKEN}"
+ app_id = "${FEISHU_APP_ID}"
  chat_id = 12345
  `)
 
@@ -608,8 +650,8 @@ func TestLoad_ResolvesEnvPlaceholders(t *testing.T) {
 	if got := cfg.Projects[0].Agent.Providers[0].Env["HTTP_PROXY"]; got != "http://127.0.0.1:7890" {
 		t.Fatalf("provider env HTTP_PROXY = %q, want http://127.0.0.1:7890", got)
 	}
-	if got := stringMapValue(cfg.Projects[0].Platforms[0].Options, "token"); got != "tg-secret" {
-		t.Fatalf("platform token = %q, want tg-secret", got)
+	if got := stringMapValue(cfg.Projects[0].Platforms[0].Options, "app_id"); got != "cli_test_app" {
+		t.Fatalf("platform app_id = %q, want cli_test_app", got)
 	}
 	if _, ok := cfg.Projects[0].Platforms[0].Options["chat_id"].(int64); !ok {
 		t.Fatalf("chat_id type = %T, want int64", cfg.Projects[0].Platforms[0].Options["chat_id"])
@@ -637,7 +679,7 @@ func TestLoad_MissingEnvPlaceholderBecomesEmptyString(t *testing.T) {
  HTTPS_PROXY = "${MISSING_PROXY}"
 
  [[projects.platforms]]
- type = "telegram"
+ type = "feishu"
 
  [projects.platforms.options]
  token = "prefix-${MISSING_TOKEN}-suffix"
@@ -655,10 +697,110 @@ func TestLoad_MissingEnvPlaceholderBecomesEmptyString(t *testing.T) {
 		t.Fatalf("provider env HTTPS_PROXY = %q, want empty", got)
 	}
 	if got := stringMapValue(cfg.Projects[0].Platforms[0].Options, "token"); got != "prefix--suffix" {
-		t.Fatalf("platform token = %q, want prefix--suffix", got)
+		t.Fatalf("platform app_id = %q, want prefix--suffix", got)
 	}
 	if _, ok := cfg.Projects[0].Agent.Options["retries"].(int64); !ok {
 		t.Fatalf("retries type = %T, want int64", cfg.Projects[0].Agent.Options["retries"])
+	}
+}
+
+func TestLoadPermissive_AllowsMissingPlatforms(t *testing.T) {
+	configPath := writeConfigFixture(t, `
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "/tmp/demo"
+`)
+
+	if _, err := Load(configPath); err == nil {
+		t.Fatal("Load() succeeded without platforms, want validation error")
+	}
+
+	cfg, err := LoadPermissive(configPath)
+	if err != nil {
+		t.Fatalf("LoadPermissive() error: %v", err)
+	}
+	if len(cfg.Projects) != 1 || cfg.Projects[0].Name != "demo" {
+		t.Fatalf("projects = %#v, want demo project", cfg.Projects)
+	}
+}
+
+func TestLoad_InvalidTOMLAndTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "invalid syntax",
+			body: "[[projects]\nname = \"demo\"\n",
+			want: "parse config",
+		},
+		{
+			name: "invalid bool type",
+			body: `
+quiet = "yes"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[[projects.platforms]]
+type = "feishu"
+`,
+			want: "parse config",
+		},
+		{
+			name: "invalid nested int type",
+			body: `
+[rate_limit]
+max_messages = "many"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[[projects.platforms]]
+type = "feishu"
+`,
+			want: "parse config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(writeConfigFixture(t, tt.body))
+			assertErrContains(t, err, tt.want)
+		})
+	}
+}
+
+func TestExpandUserPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "~", want: home},
+		{in: "~/state/config.json", want: filepath.Join(home, "state", "config.json")},
+		{in: "~other/state", want: "~other/state"},
+		{in: "/tmp/state", want: "/tmp/state"},
+		{in: "", want: ""},
+	}
+	for _, tt := range tests {
+		if got := expandUserPath(tt.in); got != tt.want {
+			t.Fatalf("expandUserPath(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
 
@@ -793,7 +935,7 @@ name = "backup"
 api_key = "sk-backup"
 
 [[projects.platforms]]
-type = "telegram"
+type = "external-placeholder"
 
 [projects.platforms.options]
 token = "test-token"
@@ -1085,6 +1227,37 @@ func TestLoadMiniMaxLocalConfig_MissingFileReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadMiniMaxLocalConfig_ExpandsUserPathAndRedactsParseError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgDir := filepath.Join(home, "private")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "minimax.json"), []byte(`{"api_key":"sk-home","base_url":"https://api.example.com"}`), 0o600); err != nil {
+		t.Fatalf("write minimax config: %v", err)
+	}
+
+	cfg, err := LoadMiniMaxLocalConfig("/unused", "~/private/minimax.json")
+	if err != nil {
+		t.Fatalf("LoadMiniMaxLocalConfig() error: %v", err)
+	}
+	if cfg.APIKey != "sk-home" || cfg.BaseURL != "https://api.example.com" {
+		t.Fatalf("config = %#v, want expanded file contents", cfg)
+	}
+
+	badPath := filepath.Join(cfgDir, "bad.json")
+	secretPayload := `{"api_key":"sk-should-not-appear",`
+	if err := os.WriteFile(badPath, []byte(secretPayload), 0o600); err != nil {
+		t.Fatalf("write bad minimax config: %v", err)
+	}
+	_, err = LoadMiniMaxLocalConfig("/unused", badPath)
+	assertErrContains(t, err, "parse minimax config")
+	if strings.Contains(err.Error(), "sk-should-not-appear") {
+		t.Fatalf("parse error leaked secret payload: %v", err)
+	}
+}
+
 const multiProjectConfigTOML = `# multi-project config
 [[projects]]
 name = "alpha"
@@ -1097,7 +1270,7 @@ type = "codex"
 provider = "openai"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "alpha-token"
@@ -1162,7 +1335,7 @@ type = "codex"
 provider_refs = ["shared-openai"]
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "demo-token"
@@ -1194,6 +1367,45 @@ func TestSaveProviderModel_GlobalProviderRef(t *testing.T) {
 	cfg := readTestConfig(t)
 	if cfg.Providers[0].Model != "gpt-5" {
 		t.Fatalf("global provider model = %q, want gpt-5", cfg.Providers[0].Model)
+	}
+}
+
+func TestGlobalProviderCRUD(t *testing.T) {
+	writeTestConfig(t, globalProviderRefConfigTOML)
+
+	initial, err := ListGlobalProviders()
+	if err != nil {
+		t.Fatalf("ListGlobalProviders() error: %v", err)
+	}
+	if len(initial) != 1 || initial[0].Name != "shared-openai" {
+		t.Fatalf("initial providers = %#v", initial)
+	}
+
+	provider := ProviderConfig{Name: "shared-codex", APIKey: "sk-codex", BaseURL: "https://codex.example.com", AgentTypes: []string{"codex"}}
+	if err := AddGlobalProvider(provider); err != nil {
+		t.Fatalf("AddGlobalProvider() error: %v", err)
+	}
+	if err := AddGlobalProvider(provider); err == nil {
+		t.Fatal("AddGlobalProvider() duplicate provider: expected error")
+	}
+
+	updated := ProviderConfig{APIKey: "sk-updated", Model: "gpt-5.4", AgentTypes: []string{"codex"}}
+	if err := UpdateGlobalProvider("shared-codex", updated); err != nil {
+		t.Fatalf("UpdateGlobalProvider() error: %v", err)
+	}
+	if err := UpdateGlobalProvider("missing", updated); err == nil {
+		t.Fatal("UpdateGlobalProvider() missing provider: expected error")
+	}
+
+	providers, err := ListGlobalProviders()
+	if err != nil {
+		t.Fatalf("ListGlobalProviders() after update error: %v", err)
+	}
+	if len(providers) != 2 {
+		t.Fatalf("provider count = %d, want 2", len(providers))
+	}
+	if providers[1].Name != "shared-codex" || providers[1].APIKey != "sk-updated" || providers[1].Model != "gpt-5.4" {
+		t.Fatalf("updated provider = %#v", providers[1])
 	}
 }
 
@@ -1308,10 +1520,10 @@ type = "codex"
 work_dir = "/tmp/alpha"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+token = "token_xxx"
 `
 
 const relayConfigFixture = `
@@ -1329,10 +1541,10 @@ type = "codex"
 work_dir = "/tmp/alpha"
 
 [[projects.platforms]]
-type = "telegram"
+type = "external-placeholder"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+token = "token_xxx"
 `
 
 const relayConfigNegativeFixture = `
@@ -1349,10 +1561,11 @@ type = "codex"
 work_dir = "/tmp/alpha"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const relayConfigInvalidVisibilityFixture = `
@@ -1369,10 +1582,11 @@ type = "codex"
 work_dir = "/tmp/alpha"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 func TestSaveFeishuPlatformCredentials_UpdateFirstCandidateAndAllowFrom(t *testing.T) {
@@ -1802,7 +2016,7 @@ type = "codex"
 work_dir = "/tmp/beta"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "test"
@@ -1831,7 +2045,7 @@ type = "codex"
 work_dir = "/tmp/gamma"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "test"
@@ -1855,7 +2069,7 @@ func validProject(name string) ProjectConfig {
 			Options: map[string]any{"mode": "default"},
 		},
 		Platforms: []PlatformConfig{
-			{Type: "telegram", Options: map[string]any{"token": "test-token"}},
+			{Type: "feishu", Options: map[string]any{"token": "test-token"}},
 		},
 	}
 }
@@ -1996,7 +2210,7 @@ type = "claudecode"
 mode = "default"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "test-token"
@@ -2022,7 +2236,7 @@ name = "backup"
 api_key = "sk-backup"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
 token = "test-token"
@@ -2039,10 +2253,10 @@ type = "codex"
 work_dir = "/tmp/alpha"
 
 [[projects.platforms]]
-type = "telegram"
+type = "external-placeholder"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+token = "token_xxx"
 
 [[projects.platforms]]
 type = "feishu"
@@ -2071,10 +2285,10 @@ type = "codex"
 work_dir = "/tmp/beta"
 
 [[projects.platforms]]
-type = "telegram"
+type = "external-placeholder"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+token = "token_xxx"
 `
 
 const projectWithResetOnIdleFixture = `
@@ -2089,10 +2303,11 @@ type = "codex"
 work_dir = "/tmp/beta"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const projectWithNegativeResetOnIdleFixture = `
@@ -2107,10 +2322,11 @@ type = "codex"
 work_dir = "/tmp/beta"
 
 [[projects.platforms]]
-type = "telegram"
+type = "feishu"
 
 [projects.platforms.options]
-bot_token = "token_xxx"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const projectWithRunAsUserFixture = `
@@ -2126,11 +2342,11 @@ type = "claudecode"
 work_dir = "/tmp/sandboxed"
 
 [[projects.platforms]]
-type = "slack"
+type = "feishu"
 
 [projects.platforms.options]
-app_token = "xapp-token"
-bot_token = "xoxb-token"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const projectWithRunAsUserRootFixture = `
@@ -2145,11 +2361,11 @@ type = "claudecode"
 work_dir = "/tmp/bad"
 
 [[projects.platforms]]
-type = "slack"
+type = "feishu"
 
 [projects.platforms.options]
-app_token = "xapp-token"
-bot_token = "xoxb-token"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const projectWithRunAsUserInvalidFixture = `
@@ -2164,29 +2380,11 @@ type = "claudecode"
 work_dir = "/tmp/bad"
 
 [[projects.platforms]]
-type = "slack"
+type = "feishu"
 
 [projects.platforms.options]
-app_token = "xapp-token"
-bot_token = "xoxb-token"
-`
-
-const weixinConfigFixture = `
-[[projects]]
-name = "alpha"
-
-[projects.agent]
-type = "codex"
-
-[projects.agent.options]
-work_dir = "/tmp/alpha"
-
-[[projects.platforms]]
-type = "weixin"
-
-[projects.platforms.options]
-token = "old_weixin_token"
-base_url = "https://ilink.example"
+app_id = "test_app"
+app_secret = "test_secret"
 `
 
 const preserveFormatFixture = `# top comment should stay
@@ -2224,7 +2422,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users:     nil,
 				}},
 			},
@@ -2236,7 +2434,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users:     &UsersConfig{Roles: map[string]RoleConfig{}},
 				}},
 			},
@@ -2248,7 +2446,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						Roles: map[string]RoleConfig{
 							"admin": {UserIDs: []string{}},
@@ -2264,7 +2462,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						Roles: map[string]RoleConfig{
 							"admin":  {UserIDs: []string{"user1"}},
@@ -2281,7 +2479,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						Roles: map[string]RoleConfig{
 							"admin":  {UserIDs: []string{"*"}},
@@ -2298,7 +2496,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						DefaultRole: "superadmin",
 						Roles: map[string]RoleConfig{
@@ -2315,7 +2513,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						DefaultRole: "member",
 						Roles: map[string]RoleConfig{
@@ -2333,7 +2531,7 @@ func TestValidateUsersConfig(t *testing.T) {
 				Projects: []ProjectConfig{{
 					Name:      "p1",
 					Agent:     AgentConfig{Type: "codex"},
-					Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+					Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 					Users: &UsersConfig{
 						Roles: map[string]RoleConfig{
 							"admin":  {UserIDs: []string{"u1"}},
@@ -2410,7 +2608,7 @@ func TestPickAgentTemplateForNewProject(t *testing.T) {
 				Model:  "gpt-4",
 			}},
 		},
-		Platforms: []PlatformConfig{{Type: "telegram", Options: map[string]any{"token": "x"}}},
+		Platforms: []PlatformConfig{{Type: "feishu", Options: map[string]any{"token": "x"}}},
 	}
 
 	t.Run("clone from existing project", func(t *testing.T) {
@@ -2524,139 +2722,6 @@ func TestCloneAgentConfig(t *testing.T) {
 	})
 }
 
-func TestEnsureProjectWithWeixinPlatform_CreatesMissingProject(t *testing.T) {
-	configPath := writeConfigFixture(t, feishuConfigFixture)
-	patchConfigPath(t, configPath)
-
-	result, err := EnsureProjectWithWeixinPlatform(EnsureProjectWithWeixinOptions{
-		ProjectName: "gamma",
-		WorkDir:     "/tmp/gamma",
-	})
-	if err != nil {
-		t.Fatalf("EnsureProjectWithWeixinPlatform returned error: %v", err)
-	}
-	if !result.Created {
-		t.Fatal("result.Created = false, want true")
-	}
-	if result.AddedPlatform {
-		t.Fatal("result.AddedPlatform = true, want false")
-	}
-
-	cfg := readConfigFixture(t, configPath)
-	if len(cfg.Projects) != 2 {
-		t.Fatalf("len(cfg.Projects) = %d, want 2", len(cfg.Projects))
-	}
-	proj := cfg.Projects[1]
-	if proj.Name != "gamma" {
-		t.Fatalf("proj.Name = %q, want %q", proj.Name, "gamma")
-	}
-	if len(proj.Platforms) != 1 {
-		t.Fatalf("len(proj.Platforms) = %d, want 1", len(proj.Platforms))
-	}
-	if proj.Platforms[0].Type != "weixin" {
-		t.Fatalf("platform type = %q, want weixin", proj.Platforms[0].Type)
-	}
-}
-
-func TestEnsureProjectWithWeixinPlatform_AddsPlatformWhenMissing(t *testing.T) {
-	configPath := writeConfigFixture(t, projectWithoutFeishuFixture)
-	patchConfigPath(t, configPath)
-
-	result, err := EnsureProjectWithWeixinPlatform(EnsureProjectWithWeixinOptions{
-		ProjectName: "beta",
-	})
-	if err != nil {
-		t.Fatalf("EnsureProjectWithWeixinPlatform returned error: %v", err)
-	}
-	if result.Created {
-		t.Fatal("result.Created = true, want false")
-	}
-	if !result.AddedPlatform {
-		t.Fatal("result.AddedPlatform = false, want true")
-	}
-
-	cfg := readConfigFixture(t, configPath)
-	proj := cfg.Projects[0]
-	if len(proj.Platforms) != 2 {
-		t.Fatalf("len(proj.Platforms) = %d, want 2", len(proj.Platforms))
-	}
-	if proj.Platforms[1].Type != "weixin" {
-		t.Fatalf("platform type = %q, want weixin", proj.Platforms[1].Type)
-	}
-}
-
-func TestSaveWeixinPlatformCredentials_UpdateToken(t *testing.T) {
-	configPath := writeConfigFixture(t, weixinConfigFixture)
-	patchConfigPath(t, configPath)
-
-	_, err := SaveWeixinPlatformCredentials(WeixinCredentialUpdateOptions{
-		ProjectName: "alpha",
-		Token:       "new_weixin_token",
-		BaseURL:     "https://ilinkai.weixin.qq.com",
-	})
-	if err != nil {
-		t.Fatalf("SaveWeixinPlatformCredentials returned error: %v", err)
-	}
-
-	cfg := readConfigFixture(t, configPath)
-	tok, _ := cfg.Projects[0].Platforms[0].Options["token"].(string)
-	if tok != "new_weixin_token" {
-		t.Fatalf("token = %q, want new_weixin_token", tok)
-	}
-	bu, _ := cfg.Projects[0].Platforms[0].Options["base_url"].(string)
-	if bu != "https://ilinkai.weixin.qq.com" {
-		t.Fatalf("base_url = %q", bu)
-	}
-}
-
-func TestSaveWeixinPlatformCredentials_AppendsScannedUserToAllowFrom(t *testing.T) {
-	configPath := writeConfigFixture(t, strings.Replace(weixinConfigFixture, `base_url = "https://ilink.example"`, "base_url = \"https://ilink.example\"\nallow_from = \"wx_user_1\"", 1))
-	patchConfigPath(t, configPath)
-
-	result, err := SaveWeixinPlatformCredentials(WeixinCredentialUpdateOptions{
-		ProjectName:       "alpha",
-		Token:             "new_weixin_token",
-		ScannedUserID:     "wx_user_2",
-		SetAllowFromEmpty: true,
-	})
-	if err != nil {
-		t.Fatalf("SaveWeixinPlatformCredentials returned error: %v", err)
-	}
-
-	if result.AllowFrom != "wx_user_1,wx_user_2" {
-		t.Fatalf("result.AllowFrom = %q, want %q", result.AllowFrom, "wx_user_1,wx_user_2")
-	}
-
-	cfg := readConfigFixture(t, configPath)
-	if got := stringMapValue(cfg.Projects[0].Platforms[0].Options, "allow_from"); got != "wx_user_1,wx_user_2" {
-		t.Fatalf("allow_from = %q, want %q", got, "wx_user_1,wx_user_2")
-	}
-}
-
-func TestSaveWeixinPlatformCredentials_LeavesWildcardAllowFromUnchanged(t *testing.T) {
-	configPath := writeConfigFixture(t, strings.Replace(weixinConfigFixture, `base_url = "https://ilink.example"`, "base_url = \"https://ilink.example\"\nallow_from = \"*\"", 1))
-	patchConfigPath(t, configPath)
-
-	result, err := SaveWeixinPlatformCredentials(WeixinCredentialUpdateOptions{
-		ProjectName:       "alpha",
-		Token:             "new_weixin_token",
-		ScannedUserID:     "wx_user_2",
-		SetAllowFromEmpty: true,
-	})
-	if err != nil {
-		t.Fatalf("SaveWeixinPlatformCredentials returned error: %v", err)
-	}
-
-	if result.AllowFrom != "*" {
-		t.Fatalf("result.AllowFrom = %q, want %q", result.AllowFrom, "*")
-	}
-
-	cfg := readConfigFixture(t, configPath)
-	if got := stringMapValue(cfg.Projects[0].Platforms[0].Options, "allow_from"); got != "*" {
-		t.Fatalf("allow_from = %q, want %q", got, "*")
-	}
-}
-
 func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 	configPath := writeConfigFixture(t, feishuConfigFixture)
 	patchConfigPath(t, configPath)
@@ -2670,7 +2735,7 @@ func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 		Mode:                 &mode,
 		ShowContextIndicator: &show,
 		ShowWorkdirIndicator: &hideWorkdir,
-		PlatformAllowFrom:    map[string]string{"telegram": "u1", "Feishu": "u2"},
+		PlatformAllowFrom:    map[string]string{"external-placeholder": "u1", "Feishu": "u2"},
 	})
 	if err != nil {
 		t.Fatalf("SaveProjectSettings: %v", err)
@@ -2691,10 +2756,68 @@ func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 		t.Fatalf("ShowWorkdirIndicator = %v, want false (per patch)", proj.ShowWorkdirIndicator)
 	}
 	if stringMapValue(proj.Platforms[0].Options, "allow_from") != "u1" {
-		t.Fatalf("telegram allow_from = %q, want u1", stringMapValue(proj.Platforms[0].Options, "allow_from"))
+		t.Fatalf("external placeholder allow_from = %q, want u1", stringMapValue(proj.Platforms[0].Options, "allow_from"))
 	}
 	if stringMapValue(proj.Platforms[1].Options, "allow_from") != "u2" {
 		t.Fatalf("feishu allow_from = %q, want u2", stringMapValue(proj.Platforms[1].Options, "allow_from"))
+	}
+}
+
+func TestSaveProjectSettings_AgentTypeFiltersProviderRefs(t *testing.T) {
+	configPath := writeConfigFixture(t, `
+[[providers]]
+name = "claude-only"
+api_key = "sk-claude"
+agent_types = ["claudecode"]
+
+[[providers]]
+name = "codex-only"
+api_key = "sk-codex"
+agent_types = ["codex"]
+
+[[projects]]
+name = "alpha"
+
+[projects.agent]
+type = "claudecode"
+provider_refs = ["claude-only", "codex-only"]
+
+[projects.agent.options]
+provider = "claude-only"
+mode = "default"
+
+[[projects.platforms]]
+type = "feishu"
+`)
+	patchConfigPath(t, configPath)
+
+	agentType := "codex"
+	emptyMode := " "
+	emptyWorkDir := ""
+	if err := SaveProjectSettings("alpha", ProjectSettingsUpdate{
+		AgentType: &agentType,
+		Mode:      &emptyMode,
+		WorkDir:   &emptyWorkDir,
+	}); err != nil {
+		t.Fatalf("SaveProjectSettings() error: %v", err)
+	}
+
+	cfg := readConfigFixture(t, configPath)
+	proj := cfg.Projects[0]
+	if proj.Agent.Type != "codex" {
+		t.Fatalf("agent type = %q, want codex", proj.Agent.Type)
+	}
+	if len(proj.Agent.ProviderRefs) != 1 || proj.Agent.ProviderRefs[0] != "codex-only" {
+		t.Fatalf("provider refs = %#v, want [codex-only]", proj.Agent.ProviderRefs)
+	}
+	if _, ok := proj.Agent.Options["provider"]; ok {
+		t.Fatalf("incompatible active provider was not cleared: %#v", proj.Agent.Options)
+	}
+	if _, ok := proj.Agent.Options["mode"]; ok {
+		t.Fatalf("empty mode was not removed: %#v", proj.Agent.Options)
+	}
+	if _, ok := proj.Agent.Options["work_dir"]; ok {
+		t.Fatalf("empty work_dir was not removed: %#v", proj.Agent.Options)
 	}
 }
 
@@ -2719,7 +2842,7 @@ func TestAddPlatformToProject_NewProjectWithAgentTypeAndWorkDir(t *testing.T) {
 	configPath := writeConfigFixture(t, feishuConfigFixture)
 	patchConfigPath(t, configPath)
 
-	err := AddPlatformToProject("sigma", PlatformConfig{Type: "slack", Options: map[string]any{"token": "x"}}, "/sigma", "gemini")
+	err := AddPlatformToProject("sigma", PlatformConfig{Type: "feishu", Options: map[string]any{"token": "x"}}, "/sigma", "gemini")
 	if err != nil {
 		t.Fatalf("AddPlatformToProject: %v", err)
 	}
@@ -2737,7 +2860,7 @@ func TestAddPlatformToProject_NewProjectWithAgentTypeAndWorkDir(t *testing.T) {
 	if stringMapValue(proj.Agent.Options, "work_dir") != "/sigma" {
 		t.Fatalf("work_dir = %q", stringMapValue(proj.Agent.Options, "work_dir"))
 	}
-	if len(proj.Platforms) != 1 || proj.Platforms[0].Type != "slack" {
+	if len(proj.Platforms) != 1 || proj.Platforms[0].Type != "feishu" {
 		t.Fatalf("platforms = %#v", proj.Platforms)
 	}
 }
@@ -2746,7 +2869,7 @@ func TestAddPlatformToProject_NewProjectClonesAgentWhenAgentTypeEmpty(t *testing
 	configPath := writeConfigFixture(t, feishuConfigFixture)
 	patchConfigPath(t, configPath)
 
-	err := AddPlatformToProject("tau", PlatformConfig{Type: "slack", Options: map[string]any{"token": "x"}}, "", "")
+	err := AddPlatformToProject("tau", PlatformConfig{Type: "feishu", Options: map[string]any{"token": "x"}}, "", "")
 	if err != nil {
 		t.Fatalf("AddPlatformToProject: %v", err)
 	}
@@ -2765,12 +2888,12 @@ func TestFormatTOML(t *testing.T) {
 		name, input, want string
 	}{
 		{
-			name:  "collapse multiple blank lines",
+			name:  "collapse multiple blank feishus",
 			input: "a = 1\n\n\n\nb = 2\n",
 			want:  "a = 1\n\nb = 2\n",
 		},
 		{
-			name:  "blank line before section header",
+			name:  "blank feishu before section header",
 			input: "a = 1\n[section]\nb = 2\n",
 			want:  "a = 1\n\n[section]\nb = 2\n",
 		},
@@ -2809,7 +2932,7 @@ func TestFormatConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
-	messy := "language = \"en\"   \n\n\n\n[[projects]]\nname = \"test\"\n\n\n[projects.agent]\ntype = \"codex\"\n\n[projects.agent.options]\n\n[[projects.platforms]]\ntype = \"telegram\"\n\n[projects.platforms.options]\ntoken = \"abc\"\n"
+	messy := "language = \"en\"   \n\n\n\n[[projects]]\nname = \"test\"\n\n\n[projects.agent]\ntype = \"codex\"\n\n[projects.agent.options]\n\n[[projects.platforms]]\ntype = \"feishu\"\n\n[projects.platforms.options]\ntoken = \"abc\"\n"
 	os.WriteFile(path, []byte(messy), 0o644)
 
 	if err := FormatConfigFile(path); err != nil {
@@ -2823,7 +2946,7 @@ func TestFormatConfigFile(t *testing.T) {
 		t.Error("trailing whitespace not stripped")
 	}
 	if strings.Contains(content, "\n\n\n") {
-		t.Error("consecutive blank lines not collapsed")
+		t.Error("consecutive blank feishus not collapsed")
 	}
 
 	cfg := &Config{}
@@ -3342,7 +3465,7 @@ func TestRemoveGlobalProvider_CleansUpProviderRefs(t *testing.T) {
     type = "codex"
     provider_refs = ["prov-a"]
   [[projects.platforms]]
-    type = "telegram"
+    type = "feishu"
     [projects.platforms.options]
       token = "t"
 `
@@ -3369,5 +3492,114 @@ func TestRemoveGlobalProvider_CleansUpProviderRefs(t *testing.T) {
 	refs2 := cfg.Projects[1].Agent.ProviderRefs
 	if len(refs2) != 0 {
 		t.Errorf("proj2 provider_refs: want [], got %v", refs2)
+	}
+}
+
+func TestProviderRefsAndProjectRemoval(t *testing.T) {
+	writeTestConfig(t, multiProjectConfigTOML)
+
+	if err := SaveProviderRefs("alpha", []string{"shared-a", "shared-b"}); err != nil {
+		t.Fatalf("SaveProviderRefs() error: %v", err)
+	}
+	if err := SaveProviderRefs("missing", []string{"shared-a"}); err == nil {
+		t.Fatal("SaveProviderRefs() missing project: expected error")
+	}
+
+	cfg := readTestConfig(t)
+	if refs := cfg.Projects[0].Agent.ProviderRefs; len(refs) != 2 || refs[0] != "shared-a" || refs[1] != "shared-b" {
+		t.Fatalf("provider_refs = %#v, want [shared-a shared-b]", refs)
+	}
+
+	if err := RemoveProject("beta"); err != nil {
+		t.Fatalf("RemoveProject() error: %v", err)
+	}
+	if err := RemoveProject("missing"); err == nil {
+		t.Fatal("RemoveProject() missing project: expected error")
+	}
+
+	cfg = readTestConfig(t)
+	if len(cfg.Projects) != 1 || cfg.Projects[0].Name != "alpha" {
+		t.Fatalf("projects after remove = %#v, want only alpha", cfg.Projects)
+	}
+}
+
+func TestGlobalSettingsAndWebAdmin(t *testing.T) {
+	writeTestConfig(t, baseConfigTOML)
+
+	settings := GetGlobalSettings()
+	if settings["idle_timeout_mins"] != 120 || settings["thinking_messages"] != true || settings["queue_max_depth"] != 5 {
+		t.Fatalf("default global settings = %#v", settings)
+	}
+
+	language := "zh"
+	attachment := "off"
+	logLevel := "debug"
+	idle := 42
+	thinking := false
+	thinkingLen := 123
+	toolMessages := false
+	toolLen := 456
+	stream := false
+	streamInterval := 2500
+	rateMax := 7
+	rateWindow := 30
+	queueDepth := 9
+	if err := SaveGlobalSettings(GlobalSettingsUpdate{
+		Language:           &language,
+		AttachmentSend:     &attachment,
+		LogLevel:           &logLevel,
+		IdleTimeoutMins:    &idle,
+		ThinkingMessages:   &thinking,
+		ThinkingMaxLen:     &thinkingLen,
+		ToolMessages:       &toolMessages,
+		ToolMaxLen:         &toolLen,
+		StreamPreviewOn:    &stream,
+		StreamPreviewIntMs: &streamInterval,
+		RateLimitMax:       &rateMax,
+		RateLimitWindow:    &rateWindow,
+		QueueMaxDepth:      &queueDepth,
+	}); err != nil {
+		t.Fatalf("SaveGlobalSettings() error: %v", err)
+	}
+
+	settings = GetGlobalSettings()
+	want := map[string]any{
+		"language":                   "zh",
+		"attachment_send":            "off",
+		"log_level":                  "debug",
+		"idle_timeout_mins":          42,
+		"thinking_messages":          false,
+		"thinking_max_len":           123,
+		"tool_messages":              false,
+		"tool_max_len":               456,
+		"stream_preview_enabled":     false,
+		"stream_preview_interval_ms": 2500,
+		"rate_limit_max_messages":    7,
+		"rate_limit_window_secs":     30,
+		"queue_max_depth":            9,
+	}
+	for key, wantValue := range want {
+		if got := settings[key]; got != wantValue {
+			t.Fatalf("settings[%s] = %#v, want %#v; all settings: %#v", key, got, wantValue, settings)
+		}
+	}
+
+	result, err := EnableWebAdmin("mgmt-secret", "bridge-secret")
+	if err != nil {
+		t.Fatalf("EnableWebAdmin() error: %v", err)
+	}
+	if result.AlreadyEnabled || result.ManagementPort != 9820 || result.BridgePort != 9810 {
+		t.Fatalf("EnableWebAdmin() result = %#v", result)
+	}
+	if result.ManagementToken != "mgmt-secret" || result.BridgeToken != "bridge-secret" {
+		t.Fatalf("web tokens = %#v", result)
+	}
+
+	result, err = EnableWebAdmin("new-mgmt", "new-bridge")
+	if err != nil {
+		t.Fatalf("EnableWebAdmin() second call error: %v", err)
+	}
+	if !result.AlreadyEnabled || result.ManagementToken != "mgmt-secret" || result.BridgeToken != "bridge-secret" {
+		t.Fatalf("EnableWebAdmin() second result = %#v", result)
 	}
 }

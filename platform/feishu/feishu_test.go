@@ -2,16 +2,19 @@ package feishu
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
+	larkapplication "github.com/larksuite/oapi-sdk-go/v3/service/application/v6"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
@@ -1740,4 +1743,417 @@ func TestFlushImageBatchesEmptySafe(t *testing.T) {
 	}
 	// Should not panic, should not block.
 	p.flushImageBatches()
+}
+
+func TestBufferImageFlushesExistingBatchWhenParentOrUserChanges(t *testing.T) {
+	received := make(chan *core.Message, 4)
+	p := &Platform{
+		platformName:        "feishu",
+		imageBatch:          make(map[string]*imageBatchEntry),
+		imageBatchWindow:    time.Hour,
+		recalledMsgIDs:      make(map[string]time.Time),
+		userNameCache:       sync.Map{},
+		chatNameCache:       sync.Map{},
+		cardActionMsgIDs:    map[string]string{},
+		richCardImageFailed: map[string]struct{}{},
+		handler: func(_ core.Platform, msg *core.Message) {
+			received <- msg
+		},
+	}
+	sessionKey := "feishu:oc_batch:ou_user"
+
+	p.bufferImage(sessionKey, &imageBatchEntry{
+		sessionKey:   sessionKey,
+		userID:       "ou_user",
+		userName:     "Alice",
+		chatName:     "Group",
+		rctx:         replyContext{messageID: "om_first", chatID: "oc_batch", sessionKey: sessionKey},
+		images:       []core.ImageAttachment{{MimeType: "image/png", Data: []byte("first")}},
+		messageIDs:   []string{"om_first"},
+		createTimeMs: 10,
+		parentID:     "",
+	})
+	p.bufferImage(sessionKey, &imageBatchEntry{
+		sessionKey:   sessionKey,
+		userID:       "ou_user",
+		userName:     "Alice",
+		chatName:     "Group",
+		rctx:         replyContext{messageID: "om_reply", chatID: "oc_batch", sessionKey: sessionKey},
+		images:       []core.ImageAttachment{{MimeType: "image/png", Data: []byte("reply")}},
+		messageIDs:   []string{"om_reply"},
+		createTimeMs: 20,
+		parentID:     "om_parent",
+	})
+
+	select {
+	case msg := <-received:
+		if msg.MessageID != "om_first" {
+			t.Fatalf("first flushed MessageID = %q, want om_first", msg.MessageID)
+		}
+		if len(msg.Images) != 1 || string(msg.Images[0].Data) != "first" {
+			t.Fatalf("first flushed images = %#v", msg.Images)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for parent-change flush")
+	}
+
+	p.bufferImage(sessionKey, &imageBatchEntry{
+		sessionKey:   sessionKey,
+		userID:       "ou_other",
+		userName:     "Bob",
+		chatName:     "Group",
+		rctx:         replyContext{messageID: "om_other", chatID: "oc_batch", sessionKey: sessionKey},
+		images:       []core.ImageAttachment{{MimeType: "image/png", Data: []byte("other")}},
+		messageIDs:   []string{"om_other"},
+		createTimeMs: 30,
+		parentID:     "om_parent",
+	})
+
+	select {
+	case msg := <-received:
+		if msg.MessageID != "om_reply" {
+			t.Fatalf("second flushed MessageID = %q, want om_reply", msg.MessageID)
+		}
+		if len(msg.Images) != 1 || string(msg.Images[0].Data) != "reply" {
+			t.Fatalf("second flushed images = %#v", msg.Images)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for user-change flush")
+	}
+
+	p.imageBatchMu.Lock()
+	pending := p.imageBatch[sessionKey]
+	p.imageBatchMu.Unlock()
+	if pending == nil || pending.userID != "ou_other" {
+		t.Fatalf("pending batch = %#v, want replacement for ou_other", pending)
+	}
+	p.flushImageBatches()
+}
+
+func TestFlushImageBatchByRefSkipsStaleOrMissingRef(t *testing.T) {
+	called := false
+	p := &Platform{
+		platformName: "feishu",
+		imageBatch:   make(map[string]*imageBatchEntry),
+		handler: func(_ core.Platform, _ *core.Message) {
+			called = true
+		},
+	}
+	sessionKey := "feishu:oc_stale:ou_user"
+	stored := &imageBatchEntry{
+		sessionKey: sessionKey,
+		userID:     "ou_user",
+		images:     []core.ImageAttachment{{MimeType: "image/png", Data: []byte("stored")}},
+		messageIDs: []string{"om_stored"},
+	}
+	stale := &imageBatchEntry{
+		sessionKey: sessionKey,
+		userID:     "ou_user",
+		images:     []core.ImageAttachment{{MimeType: "image/png", Data: []byte("stale")}},
+		messageIDs: []string{"om_stale"},
+	}
+	p.imageBatch[sessionKey] = stored
+
+	p.flushImageBatchByRef(sessionKey, stale)
+	if called {
+		t.Fatal("stale ref should not dispatch")
+	}
+	p.imageBatchMu.Lock()
+	if p.imageBatch[sessionKey] != stored {
+		t.Fatal("stale ref should leave current entry intact")
+	}
+	p.imageBatchMu.Unlock()
+
+	p.flushImageBatchByRef("missing", stored)
+	if called {
+		t.Fatal("missing key should not dispatch")
+	}
+}
+
+func TestDispatchImageBatchEntryBoundaries(t *testing.T) {
+	t.Run("empty images no-op", func(t *testing.T) {
+		called := false
+		p := &Platform{platformName: "feishu", handler: func(core.Platform, *core.Message) { called = true }}
+		p.dispatchImageBatchEntry(&imageBatchEntry{messageIDs: []string{"om_empty"}})
+		if called {
+			t.Fatal("empty image batch should not dispatch")
+		}
+	})
+
+	t.Run("canonical id uses last message and prepends quoted images", func(t *testing.T) {
+		got := make(chan *core.Message, 1)
+		p := &Platform{
+			platformName: "feishu",
+			handler: func(_ core.Platform, msg *core.Message) {
+				got <- msg
+			},
+		}
+		p.markMessageRecalled("om_first")
+		p.dispatchImageBatchEntry(&imageBatchEntry{
+			sessionKey:   "feishu:oc_batch:ou_user",
+			userID:       "ou_user",
+			userName:     "Alice",
+			chatName:     "Group",
+			rctx:         replyContext{messageID: "om_second", chatID: "oc_batch", sessionKey: "feishu:oc_batch:ou_user"},
+			quoted:       quotedMessage{text: "quoted text", images: []core.ImageAttachment{{MimeType: "image/png", Data: []byte("quoted")}}},
+			images:       []core.ImageAttachment{{MimeType: "image/png", Data: []byte("first")}, {MimeType: "image/jpeg", Data: []byte("second")}},
+			messageIDs:   []string{"om_first", "om_second"},
+			createTimeMs: 99,
+		})
+
+		select {
+		case msg := <-got:
+			if msg.MessageID != "om_second" {
+				t.Fatalf("MessageID = %q, want last message om_second", msg.MessageID)
+			}
+			if msg.ExtraContent != "quoted text" {
+				t.Fatalf("ExtraContent = %q, want quoted text", msg.ExtraContent)
+			}
+			if len(msg.Images) != 3 {
+				t.Fatalf("len(Images) = %d, want quoted + 2 batch images", len(msg.Images))
+			}
+			if string(msg.Images[0].Data) != "quoted" || string(msg.Images[2].Data) != "second" {
+				t.Fatalf("image order = %#v", msg.Images)
+			}
+			if msg.UserMessageTimeMs != 99 {
+				t.Fatalf("UserMessageTimeMs = %d, want 99", msg.UserMessageTimeMs)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for batch dispatch")
+		}
+	})
+}
+
+func TestCoerceMillisecondsNumericVariants(t *testing.T) {
+	tests := []struct {
+		name string
+		in   any
+		want int64
+	}{
+		{"int", int(12), 12},
+		{"int32", int32(13), 13},
+		{"int64", int64(14), 14},
+		{"uint", uint(15), 15},
+		{"uint32", uint32(16), 16},
+		{"uint64", uint64(17), 17},
+		{"float32", float32(18.9), 18},
+		{"float64", float64(19.9), 19},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := coerceMilliseconds(tt.in)
+			if err != nil {
+				t.Fatalf("coerceMilliseconds(%T) error = %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Fatalf("coerceMilliseconds(%T) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlatformSimpleStateHelpersAndStopFlush(t *testing.T) {
+	cleanup := func() {
+		sharedWSMu.Lock()
+		defer sharedWSMu.Unlock()
+		for k := range sharedWSGroups {
+			delete(sharedWSGroups, k)
+		}
+	}
+	cleanup()
+	defer cleanup()
+
+	received := make(chan *core.Message, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &Platform{
+		platformName:        "feishu",
+		appID:               "cli_stop",
+		domain:              "feishu.cn",
+		useInteractiveCard:  true,
+		imageBatch:          make(map[string]*imageBatchEntry),
+		imageBatchWindow:    time.Hour,
+		isWSPrimary:         true,
+		cancel:              cancel,
+		cardActionMsgIDs:    map[string]string{},
+		richCardImageFailed: map[string]struct{}{},
+		handler: func(_ core.Platform, msg *core.Message) {
+			received <- msg
+		},
+	}
+	registerSharedWS(p)
+
+	p.SetCardNavigationHandler(func(string, string) *core.Card { return core.NewCard().Title("ok", "green").Build() })
+	if p.cardNavHandler == nil {
+		t.Fatal("SetCardNavigationHandler did not store handler")
+	}
+	if !p.KeepPreviewOnFinish() {
+		t.Fatal("KeepPreviewOnFinish = false, want true")
+	}
+	if p.getCancel() == nil {
+		t.Fatal("getCancel returned nil")
+	}
+	if p.getServer() != nil {
+		t.Fatal("getServer on unset server should be nil")
+	}
+
+	sessionKey := "feishu:oc_stop:ou_user"
+	p.bufferImage(sessionKey, &imageBatchEntry{
+		sessionKey: sessionKey,
+		userID:     "ou_user",
+		images:     []core.ImageAttachment{{MimeType: "image/png", Data: []byte("stop-flush")}},
+		messageIDs: []string{"om_stop"},
+		rctx:       replyContext{messageID: "om_stop", chatID: "oc_stop", sessionKey: sessionKey},
+	})
+	if err := p.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not call cancel")
+	}
+	select {
+	case msg := <-received:
+		if msg.MessageID != "om_stop" || len(msg.Images) != 1 {
+			t.Fatalf("flushed stop message = %#v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not flush pending image batch")
+	}
+	sharedWSMu.Lock()
+	_, exists := sharedWSGroups[sharedWSKey("cli_stop", "feishu.cn")]
+	sharedWSMu.Unlock()
+	if exists {
+		t.Fatal("Stop did not unregister primary shared WS group")
+	}
+}
+
+func TestMessageWithdrawnAndMimeHelpers(t *testing.T) {
+	for _, tt := range []struct {
+		code int
+		msg  string
+		want bool
+	}{
+		{230011, "", true},
+		{0, "message was withdrawn", true},
+		{0, "消息已撤回", true},
+		{0, "permission denied", false},
+	} {
+		if got := isMessageWithdrawnCode(tt.code, tt.msg); got != tt.want {
+			t.Fatalf("isMessageWithdrawnCode(%d, %q) = %v, want %v", tt.code, tt.msg, got, tt.want)
+		}
+	}
+	if isMessageWithdrawnError(nil) {
+		t.Fatal("nil error should not be treated as withdrawn")
+	}
+	if !isMessageWithdrawnError(errors.New("message not found")) {
+		t.Fatal("not found error should be treated as withdrawn")
+	}
+
+	mimeTests := []struct {
+		data []byte
+		want string
+	}{
+		{[]byte{0x89, 'P', 'N', 'G', 0, 0, 0, 0}, "image/png"},
+		{[]byte{0xff, 0xd8, 0, 0, 0, 0, 0, 0}, "image/jpeg"},
+		{[]byte{'G', 'I', 'F', '8', 0, 0, 0, 0}, "image/gif"},
+		{[]byte{'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P'}, "image/webp"},
+		{[]byte("short"), "image/png"},
+	}
+	for _, tt := range mimeTests {
+		if got := detectMimeType(tt.data); got != tt.want {
+			t.Fatalf("detectMimeType(%x) = %q, want %q", tt.data, got, tt.want)
+		}
+	}
+}
+
+func TestReplyChainAndResolveUserNameHelpers(t *testing.T) {
+	if got := formatReplyChain(nil); got != "" {
+		t.Fatalf("empty reply chain = %q, want empty", got)
+	}
+	single := formatReplyChain([]chainMessage{{senderName: "Alice", senderType: "user", text: "hello"}})
+	if !strings.Contains(single, "[Quoted message from Alice]") || !strings.Contains(single, "hello") {
+		t.Fatalf("single reply chain format = %q", single)
+	}
+	multi := formatReplyChain([]chainMessage{
+		{senderName: "Alice", senderType: "user", text: "question"},
+		{senderName: "Bot", senderType: "app", text: "answer"},
+	})
+	if !strings.Contains(multi, "--- Reply chain (2 messages) ---") ||
+		!strings.Contains(multi, "Alice (user)") ||
+		!strings.Contains(multi, "Bot (assistant)") {
+		t.Fatalf("multi reply chain format = %q", multi)
+	}
+
+	p := &Platform{}
+	names := p.resolveUserNames([]string{"invalid id", "invalid id", ""})
+	if len(names) != 2 {
+		t.Fatalf("resolveUserNames dedupe len = %d, want 2", len(names))
+	}
+	if names["invalid id"] != "invalid id" || names[""] != "" {
+		t.Fatalf("resolveUserNames invalid-id fallback = %#v", names)
+	}
+}
+
+func TestOnBotMenuDispatchesSlashCommandAndFilters(t *testing.T) {
+	userID := "ou_menu_user"
+	buildEvent := func(eventKey string) *larkapplication.P2BotMenuV6 {
+		return &larkapplication.P2BotMenuV6{
+			Event: &larkapplication.P2BotMenuV6Data{
+				EventKey: stringPtr(eventKey),
+				Operator: &larkapplication.Operator{
+					OperatorId: &larkapplication.UserId{OpenId: stringPtr(userID)},
+				},
+			},
+		}
+	}
+
+	got := make(chan *core.Message, 1)
+	p := &Platform{
+		platformName: "feishu",
+		allowFrom:    userID,
+		handler: func(_ core.Platform, msg *core.Message) {
+			got <- msg
+		},
+	}
+	p.userNameCache.Store(userID, "Menu User")
+
+	if err := p.onBotMenu(buildEvent("status")); err != nil {
+		t.Fatalf("onBotMenu error = %v", err)
+	}
+	select {
+	case msg := <-got:
+		if msg.Content != "/status" {
+			t.Fatalf("Content = %q, want /status", msg.Content)
+		}
+		if msg.UserName != "Menu User" {
+			t.Fatalf("UserName = %q, want cached Menu User", msg.UserName)
+		}
+		if msg.SessionKey != "feishu:"+userID+":"+userID {
+			t.Fatalf("SessionKey = %q", msg.SessionKey)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for menu command")
+	}
+
+	p.allowFrom = "ou_other"
+	if err := p.onBotMenu(buildEvent("help")); err != nil {
+		t.Fatalf("onBotMenu unauthorized error = %v", err)
+	}
+	select {
+	case msg := <-got:
+		t.Fatalf("unauthorized menu click dispatched message: %#v", msg)
+	default:
+	}
+
+	p.allowFrom = userID
+	p.groupOnly = true
+	if err := p.onBotMenu(buildEvent("/help")); err != nil {
+		t.Fatalf("onBotMenu group_only error = %v", err)
+	}
+	select {
+	case msg := <-got:
+		t.Fatalf("group_only menu click dispatched message: %#v", msg)
+	default:
+	}
 }

@@ -16,7 +16,7 @@ func TestStripJSONC(t *testing.T) {
 		want  string
 	}{
 		{"plain json", `{"a": 1}`, `{"a": 1}`},
-		{"line comment", "{\n  \"a\": 1 // comment\n}", "{\n  \"a\": 1 \n}"},
+		{"feishu comment", "{\n  \"a\": 1 // comment\n}", "{\n  \"a\": 1 \n}"},
 		{"block comment", "{\n  /* block */\n  \"a\": 1\n}", "{\n  \n  \"a\": 1\n}"},
 		{"comment in string", `{"url": "http://example.com"}`, `{"url": "http://example.com"}`},
 		{"empty", "", ""},
@@ -134,12 +134,12 @@ func TestReadSettingsFile(t *testing.T) {
 
 func TestParseHookOutput(t *testing.T) {
 	tests := []struct {
-		name         string
-		stdout       string
-		wantBehavior string
-		wantMessage  string
+		name            string
+		stdout          string
+		wantBehavior    string
+		wantMessage     string
 		wantFallthrough bool
-		wantErr      bool
+		wantErr         bool
 	}{
 		{"allow", "allow", "allow", "", false, false},
 		{"deny", "deny", "deny", "", false, false},
@@ -393,12 +393,12 @@ func TestTryHook(t *testing.T) {
 
 func TestBuildHookStdin(t *testing.T) {
 	hctx := hookContext{
-		sessionID:          "sess-123",
-		toolName:           "Bash",
-		toolInput:          map[string]any{"command": "ls"},
-		cwd:                "/workdir",
-		permissionMode:     "default",
-		transcriptPath:     "/tmp/transcript.jsonl",
+		sessionID:             "sess-123",
+		toolName:              "Bash",
+		toolInput:             map[string]any{"command": "ls"},
+		cwd:                   "/workdir",
+		permissionMode:        "default",
+		transcriptPath:        "/tmp/transcript.jsonl",
 		permissionSuggestions: []any{},
 	}
 	data := buildHookStdin(hctx)

@@ -543,7 +543,7 @@ func TestWorkspaceAgentOptions_FullSnapshot(t *testing.T) {
 	// PATH. WorkspaceAgentOptions only reads fields that the production
 	// New() also writes; this just verifies the snapshot shape.
 	a := &Agent{
-		cmd:           "my-cli",
+		cmd:              "my-cli",
 		cliExtraArgs:     []string{"--add-dir", "/parent"},
 		cmdArgsFlag:      "-a",
 		model:            "claude-opus-4-7",
@@ -559,7 +559,7 @@ func TestWorkspaceAgentOptions_FullSnapshot(t *testing.T) {
 
 	want := map[string]any{
 		"mode":               "acceptEdits",
-		"cmd":           "my-cli --add-dir /parent",
+		"cmd":                "my-cli --add-dir /parent",
 		"cmd_args_flag":      "-a",
 		"model":              "claude-opus-4-7",
 		"reasoning_effort":   "high",
@@ -621,7 +621,7 @@ func TestWorkspaceAgentOptions_RoundTripsThroughNew(t *testing.T) {
 		t.Skip("run_as_user-based LookPath bypass is Unix-only")
 	}
 	parent := &Agent{
-		cmd:           "my-cli",
+		cmd:              "my-cli",
 		cliExtraArgs:     []string{"code", "--add-dir", "/parent"},
 		cmdArgsFlag:      "-a",
 		model:            "claude-opus-4-7",
@@ -684,7 +684,7 @@ func TestScanSessionMeta_ArrayContent(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "test.jsonl")
 
-	lines := []string{
+	feishus := []string{
 		`{"type": "queue-operation", "operation": "start"}`,
 		`{"type": "user", "message": {"content": "Hello world"}}`,
 		`{"type": "assistant", "message": {"content": [{"type": "thinking", "text": ""}, {"type": "text", "text": "Hi there"}]}}`,
@@ -694,8 +694,8 @@ func TestScanSessionMeta_ArrayContent(t *testing.T) {
 	}
 
 	data := ""
-	for _, line := range lines {
-		data += line + "\n"
+	for _, feishu := range feishus {
+		data += feishu + "\n"
 	}
 	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
 		t.Fatalf("write test jsonl: %v", err)
@@ -708,7 +708,7 @@ func TestScanSessionMeta_ArrayContent(t *testing.T) {
 		t.Errorf("scanSessionMeta count = %d, want 4 (2 user + 2 assistant, array content should not be skipped)", count)
 	}
 
-	// Summary should come from the last user message with string content (line 2)
+	// Summary should come from the last user message with string content (feishu 2)
 	if summary != "Hello world" {
 		t.Errorf("scanSessionMeta summary = %q, want %q", summary, "Hello world")
 	}
@@ -720,14 +720,14 @@ func TestScanSessionMeta_AllArrayContent(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "test.jsonl")
 
-	lines := []string{
+	feishus := []string{
 		`{"type": "user", "message": {"content": [{"type": "tool_result", "content": "data"}]}}`,
 		`{"type": "assistant", "message": {"content": [{"type": "text", "text": "reply"}]}}`,
 	}
 
 	data := ""
-	for _, line := range lines {
-		data += line + "\n"
+	for _, feishu := range feishus {
+		data += feishu + "\n"
 	}
 	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
 		t.Fatalf("write test jsonl: %v", err)

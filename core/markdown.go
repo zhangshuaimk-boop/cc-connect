@@ -6,19 +6,19 @@ import (
 )
 
 var (
-	reCodeBlock   = regexp.MustCompile("(?s)```[a-zA-Z]*\n?(.*?)```")
-	reInlineCode  = regexp.MustCompile("`([^`]+)`")
-	reBoldAst     = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	reItalicAst   = regexp.MustCompile(`\*(.+?)\*`)
-	reStrike      = regexp.MustCompile(`~~(.+?)~~`)
-	reLink        = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
-	reHeading     = regexp.MustCompile(`(?m)^#{1,6}\s+`)
-	reHorizontal  = regexp.MustCompile(`(?m)^---+\s*$`)
-	reBlockquote  = regexp.MustCompile(`(?m)^>\s?`)
+	reCodeBlock  = regexp.MustCompile("(?s)```[a-zA-Z]*\n?(.*?)```")
+	reInlineCode = regexp.MustCompile("`([^`]+)`")
+	reBoldAst    = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reItalicAst  = regexp.MustCompile(`\*(.+?)\*`)
+	reStrike     = regexp.MustCompile(`~~(.+?)~~`)
+	reLink       = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	reHeading    = regexp.MustCompile(`(?m)^#{1,6}\s+`)
+	reHorizontal = regexp.MustCompile(`(?m)^---+\s*$`)
+	reBlockquote = regexp.MustCompile(`(?m)^>\s?`)
 )
 
 // StripMarkdown converts Markdown-formatted text to clean plain text.
-// Useful for platforms that don't support Markdown rendering (WeChat, LINE, etc.).
+// Useful for surfaces that don't support Markdown rendering.
 //
 // Note: the underscore forms of bold (`__bold__`) and italic (`_italic_`) are
 // intentionally not stripped. The patterns `_..._` and `__...__` are
@@ -28,7 +28,7 @@ var (
 // asterisk forms (`**bold**`, `*italic*`), so dropping the underscore forms
 // is the safe trade-off here. Inputs containing literal `_italic_` will keep
 // their underscores; this is a small cosmetic loss vs. losing identifier
-// integrity in TTS / LINE / WeChat output.
+// integrity in plain-text or TTS output.
 func StripMarkdown(s string) string {
 	// Preserve code block content but remove fences
 	s = reCodeBlock.ReplaceAllString(s, "$1")

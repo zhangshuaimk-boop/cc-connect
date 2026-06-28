@@ -77,7 +77,7 @@ func (r *CommandRegistry) SetAgentDirs(dirs []string) {
 
 // Resolve looks up a command by name. Config commands take priority, then
 // agent command directories are scanned for a matching .md file.
-// Hyphens and underscores are treated as equivalent so that Telegram-sanitized
+// Hyphens and underscores are treated as equivalent so that platform-sanitized
 // names (e.g. "my_cmd") match original command names ("my-cmd").
 func (r *CommandRegistry) Resolve(name string) (*CustomCommand, bool) {
 	lower := strings.ToLower(name)

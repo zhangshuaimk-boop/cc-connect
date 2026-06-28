@@ -169,7 +169,7 @@ GET /api/v1/status?token=mgmt-secret
   "data": {
     "version": "v1.2.0",
     "uptime_seconds": 3600,
-    "connected_platforms": ["feishu", "telegram"],
+    "connected_platforms": ["feishu"] ,
     "projects_count": 2,
     "bridge_adapters": [
       {
@@ -200,8 +200,8 @@ GET /api/v1/status?token=mgmt-secret
 
 ```json
 {
-  "session_key": "telegram:123:456",
-  "platform": "telegram"
+  "session_key": "feishu:chat_xxx:ou_xxx",
+  "platform": "feishu"
 }
 ```
 
@@ -334,7 +334,7 @@ GET /api/v1/status?token=mgmt-secret
       {
         "name": "my-backend",
         "agent_type": "claudecode",
-        "platforms": ["feishu", "telegram"],
+        "platforms": ["feishu"] ,
         "sessions_count": 3,
         "heartbeat_enabled": true
       }
@@ -369,17 +369,17 @@ GET /api/v1/status?token=mgmt-secret
         "connected": true
       },
       {
-        "type": "telegram",
+        "type": "feishu",
         "connected": true
       }
     ],
     "sessions_count": 3,
-    "active_session_keys": ["telegram:123:456", "feishu:ou_xxx:chat_xxx"],
+    "active_session_keys": ["feishu:chat_xxx:ou_xxx"] ,
     "heartbeat": {
       "enabled": true,
       "paused": false,
       "interval_mins": 30,
-      "session_key": "telegram:123:456"
+      "session_key": "feishu:chat_xxx:ou_xxx"
     },
     "settings": {
       "quiet": false,
@@ -460,9 +460,9 @@ GET /api/v1/status?token=mgmt-secret
     "sessions": [
       {
         "id": "sess_abc123",
-        "session_key": "telegram:123:456",
+        "session_key": "feishu:chat_xxx:ou_xxx",
         "name": "work",
-        "platform": "telegram",
+        "platform": "feishu",
         "active": true,
         "created_at": "2026-03-10T09:00:00Z",
         "updated_at": "2026-03-10T10:30:00Z",
@@ -483,14 +483,14 @@ GET /api/v1/status?token=mgmt-secret
 
 ```json
 {
-  "session_key": "telegram:123:456",
+  "session_key": "feishu:chat_xxx:ou_xxx",
   "name": "work"
 }
 ```
 
 | 字段          | 类型   | 必填 | 说明                                      |
 |---------------|--------|------|-------------------------------------------|
-| `session_key` | string | 是   | 平台路由键（如 `telegram:123:456`）       |
+| `session_key` | string | 是   | 平台路由键（如 `feishu:chat_xxx:ou_xxx`）       |
 | `name`        | string | 否   | 人类可读的会话名称                        |
 
 **响应：**
@@ -500,7 +500,7 @@ GET /api/v1/status?token=mgmt-secret
   "ok": true,
   "data": {
     "id": "sess_xyz789",
-    "session_key": "telegram:123:456",
+    "session_key": "feishu:chat_xxx:ou_xxx",
     "name": "work",
     "created_at": "2026-03-10T10:35:00Z"
   }
@@ -533,9 +533,9 @@ GET /api/v1/status?token=mgmt-secret
   "ok": true,
   "data": {
     "id": "sess_abc123",
-    "session_key": "telegram:123:456",
+    "session_key": "feishu:chat_xxx:ou_xxx",
     "name": "work",
-    "platform": "telegram",
+    "platform": "feishu",
     "active": true,
     "agent_session_id": "as_xxx",
     "created_at": "2026-03-10T09:00:00Z",
@@ -583,7 +583,7 @@ GET /api/v1/status?token=mgmt-secret
 
 ```json
 {
-  "session_key": "telegram:123:456",
+  "session_key": "feishu:chat_xxx:ou_xxx",
   "session_id": "sess_xyz789"
 }
 ```
@@ -615,7 +615,7 @@ GET /api/v1/status?token=mgmt-secret
 
 ```json
 {
-  "session_key": "telegram:123:456",
+  "session_key": "feishu:chat_xxx:ou_xxx",
   "message": "Review the latest commit"
 }
 ```
@@ -830,7 +830,7 @@ GET /api/v1/status?token=mgmt-secret
       {
         "id": "cron_abc123",
         "project": "my-backend",
-        "session_key": "telegram:123:456",
+        "session_key": "feishu:chat_xxx:ou_xxx",
         "cron_expr": "0 6 * * *",
         "prompt": "Summarize GitHub trending",
         "exec": "",
@@ -858,7 +858,7 @@ GET /api/v1/status?token=mgmt-secret
 ```json
 {
   "project": "my-backend",
-  "session_key": "telegram:123:456",
+  "session_key": "feishu:chat_xxx:ou_xxx",
   "cron_expr": "0 6 * * *",
   "prompt": "Summarize GitHub trending",
   "description": "Daily GitHub Trending",
@@ -871,7 +871,7 @@ GET /api/v1/status?token=mgmt-secret
 ```json
 {
   "project": "my-backend",
-  "session_key": "telegram:123:456",
+  "session_key": "feishu:chat_xxx:ou_xxx",
   "cron_expr": "0 9 * * 1",
   "exec": "npm run weekly-report",
   "work_dir": "/path/to/project",
@@ -901,7 +901,7 @@ GET /api/v1/status?token=mgmt-secret
   "data": {
     "id": "cron_xyz789",
     "project": "my-backend",
-    "session_key": "telegram:123:456",
+    "session_key": "feishu:chat_xxx:ou_xxx",
     "cron_expr": "0 6 * * *",
     "prompt": "Summarize GitHub trending",
     "description": "Daily GitHub Trending",
@@ -965,7 +965,7 @@ GET /api/v1/status?token=mgmt-secret
     "paused": false,
     "interval_mins": 30,
     "only_when_idle": true,
-    "session_key": "telegram:123:456",
+    "session_key": "feishu:chat_xxx:ou_xxx",
     "silent": true,
     "run_count": 42,
     "error_count": 0,
@@ -1129,10 +1129,7 @@ GET /api/v1/status?token=mgmt-secret
 
 示例：
 
-- `telegram:123456789:123456789` — Telegram 用户 123456789，会话 123456789
 - `feishu:ou_xxx:chat_yyy` — 飞书用户与会话
-- `slack:C01234:U05678` — Slack 频道与用户
-- `discord:123456789:987654321` — Discord 服务器与用户
 
 多工作区模式下，格式可能包含工作区前缀：
 
@@ -1168,6 +1165,5 @@ cors_origins = ["http://localhost:3000", "https://dashboard.example.com"]
 
 ## 10. 参考
 
-- [Bridge 协议](bridge-protocol.md) — 外部平台适配器的 WebSocket 协议
-- [使用指南](usage.md) — 终端用户功能与斜杠命令
+- [飞书配置](feishu.md) — 飞书/Lark 应用配置
 - [config.example.toml](../config.example.toml) — 配置模板

@@ -150,14 +150,14 @@ func (s *APIServer) SetMaxAttachmentSize(bytes int64) {
 	}
 }
 
-// sendBodyEnvelope is the slack added on top of the base64-expanded attachment
+// sendBodyEnvelope is the padding added on top of the base64-expanded attachment
 // limit when sizing the /send request body: it covers the JSON envelope (field
 // names, message text, metadata) and a few sub-limit attachments.
 const sendBodyEnvelope int64 = 8 << 20 // 8 MiB
 
 // sendBodyLimit returns the maximum accepted /send request body size in bytes.
 // It is derived from the per-attachment limit to accommodate base64 expansion
-// (~4/3) plus envelope slack, falling back to DefaultMaxAttachmentSize when no
+// (~4/3) plus envelope padding, falling back to DefaultMaxAttachmentSize when no
 // limit has been set (e.g. APIServer zero value in tests). Callers in hot paths
 // (handleSend) run concurrently with SetMaxAttachmentSize, so the read is
 // guarded by s.mu.

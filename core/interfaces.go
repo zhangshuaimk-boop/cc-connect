@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Platform abstracts a messaging platform (Feishu, DingTalk, Slack, etc.).
+// Platform abstracts a messaging platform (Feishu and compatible platform adapters.).
 type Platform interface {
 	Name() string
 	Start(handler MessageHandler) error
@@ -66,7 +66,7 @@ type SessionEnvInjector interface {
 
 // FormattingInstructionProvider is an optional interface for platforms that
 // provide platform-specific formatting instructions for the agent system prompt
-// (e.g., Slack mrkdwn vs standard Markdown).
+// (e.g., platform-specific Markdown vs standard Markdown).
 type FormattingInstructionProvider interface {
 	FormattingInstructions() string
 }
@@ -76,6 +76,18 @@ type FormattingInstructionProvider interface {
 // The engine calls this before StartSession when the platform provides formatting.
 type PlatformPromptInjector interface {
 	SetPlatformPrompt(prompt string)
+}
+
+// SelfIDProvider is an optional interface for platforms that know their own
+// identity on the messaging platform, such as a Feishu bot open_id.
+type SelfIDProvider interface {
+	SelfID() string
+}
+
+// SelfNameProvider is an optional interface for platforms that know their own
+// display name on the messaging platform.
+type SelfNameProvider interface {
+	SelfName() string
 }
 
 // AgentSystemPrompt returns the system prompt fragment that informs agents about
@@ -102,7 +114,7 @@ When sending an audio (mp3/wav/m4a/ogg/opus) or video (mp4/mov/webm) clip that s
   cc-connect send --audio /absolute/path/to/clip.mp3
   cc-connect send --video /absolute/path/to/demo.mp4
 
-These render as native media on platforms that support it (e.g. Feishu voice bubbles, Telegram voice messages). cc-connect transparently transcodes audio to the platform's preferred codec (e.g. opus for Feishu). On platforms without dedicated audio/video support cc-connect automatically falls back to the file-attachment path so delivery is preserved. Do NOT downgrade the user's request to --file when they explicitly asked for audio or video.
+These render as native media on platforms that support it (e.g. Feishu voice bubbles). cc-connect transparently transcodes audio to the platform's preferred codec (e.g. opus for Feishu). On platforms without dedicated audio/video support cc-connect automatically falls back to the file-attachment path so delivery is preserved. Do NOT downgrade the user's request to --file when they explicitly asked for audio or video.
 
 When the user explicitly asks you to synthesize speech from text, use:
 
@@ -272,7 +284,7 @@ type TypingIndicatorDone interface {
 }
 
 // AtMentionSender is an optional interface for platforms that support @mention in
-// reply messages (e.g. DingTalk). Platforms that implement this interface can
+// reply messages (for example card-based adapters). Platforms that implement this interface can
 // include @user notifications when replying in group chats.
 type AtMentionSender interface {
 	ReplyWithAt(ctx context.Context, replyCtx any, content string, atUsers []string, atAll bool) error
@@ -323,7 +335,7 @@ type ProgressCardPayloadSupport interface {
 }
 
 // ProgressUpdateThrottler is an optional interface for platforms that need
-// rate-limited progress edits (e.g. Discord's ~5 edits / 5s per channel).
+// rate-limited progress edits (for example per-channel edit quotas).
 type ProgressUpdateThrottler interface {
 	ProgressUpdateInterval() time.Duration
 }
@@ -331,11 +343,11 @@ type ProgressUpdateThrottler interface {
 // ButtonOption represents a clickable inline button.
 type ButtonOption struct {
 	Text string // display text on the button
-	Data string // callback data returned when clicked (≤64 bytes for Telegram)
+	Data string // callback data returned when clicked (short platform callback payload)
 }
 
 // InlineButtonSender is an optional interface for platforms that support
-// sending messages with clickable inline buttons (e.g. Telegram Inline Keyboard).
+// sending messages with clickable inline buttons (e.g. inline buttons).
 // Buttons is a 2D slice: each inner slice is one row of buttons.
 type InlineButtonSender interface {
 	SendWithButtons(ctx context.Context, replyCtx any, content string, buttons [][]ButtonOption) error
@@ -664,7 +676,7 @@ type PermissionModeInfo struct {
 	DescZh string
 }
 
-// BotCommandInfo represents a command for bot menu registration (e.g. Telegram setMyCommands).
+// BotCommandInfo represents a command for bot menu registration (for example native command menus).
 type BotCommandInfo struct {
 	Command     string // command name without leading "/"
 	Description string // short description for the menu
@@ -672,7 +684,7 @@ type BotCommandInfo struct {
 }
 
 // CommandRegistrar is an optional interface for platforms that support
-// registering commands to the platform's native menu (e.g. Telegram's setMyCommands).
+// registering commands to the platform's native menu.
 type CommandRegistrar interface {
 	RegisterCommands(commands []BotCommandInfo) error
 }
@@ -697,10 +709,10 @@ type StreamingCard interface {
 }
 
 // StreamingCardPlatform is an optional interface for platforms that support
-// aggregating an entire agent turn into a single updatable card message
-// (e.g. DingTalk AI Card). When the engine detects this interface, it
-// creates a streaming card at the start of each turn and routes all
-// events through it instead of sending individual messages.
+// aggregating an entire agent turn into a single updatable card message.
+// When the engine detects this interface, it creates a streaming card at the
+// start of each turn and routes all events through it instead of sending
+// individual messages.
 type StreamingCardPlatform interface {
 	CreateStreamingCard(ctx context.Context, replyCtx any) (StreamingCard, error)
 }

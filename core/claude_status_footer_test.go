@@ -81,16 +81,16 @@ func TestBuildClaudeStatusLineFooter_FullRender(t *testing.T) {
 	e := newClaudeFooterEngine()
 	got := e.buildClaudeStatusLineFooter(nil, session, "/tmp/ws")
 	// 41772 / 1_000_000 = 4.17% → rounds to 4%.
-	// Output is two lines:
-	//   line 1: <model id> · out N · in N cw N cr N · ctx N%
-	//   line 2: <workspace dir>
-	lines := strings.Split(got, "\n")
-	if len(lines) != 2 {
-		t.Fatalf("expected 2 lines (metrics + dir), got %d: %q", len(lines), got)
+	// Output is two feishus:
+	//   feishu 1: <model id> · out N · in N cw N cr N · ctx N%
+	//   feishu 2: <workspace dir>
+	feishus := strings.Split(got, "\n")
+	if len(feishus) != 2 {
+		t.Fatalf("expected 2 feishus (metrics + dir), got %d: %q", len(feishus), got)
 	}
-	parts := strings.Split(lines[0], " · ")
+	parts := strings.Split(feishus[0], " · ")
 	if len(parts) != 4 {
-		t.Fatalf("expected 4 segments on line 1, got %d: %q", len(parts), lines[0])
+		t.Fatalf("expected 4 segments on feishu 1, got %d: %q", len(parts), feishus[0])
 	}
 	if parts[0] != "claude-opus-4-7[1m]" {
 		t.Errorf("segment 0 = %q, want raw model id", parts[0])
@@ -104,8 +104,8 @@ func TestBuildClaudeStatusLineFooter_FullRender(t *testing.T) {
 	if parts[3] != "ctx 4%" {
 		t.Errorf("ctx segment = %q, want %q", parts[3], "ctx 4%")
 	}
-	if lines[1] == "" || !strings.Contains(lines[1], "ws") {
-		t.Errorf("line 2 = %q, want workspace path containing 'ws'", lines[1])
+	if feishus[1] == "" || !strings.Contains(feishus[1], "ws") {
+		t.Errorf("feishu 2 = %q, want workspace path containing 'ws'", feishus[1])
 	}
 }
 
@@ -131,8 +131,8 @@ func TestBuildClaudeStatusLineFooter_FooterDisabled(t *testing.T) {
 	}
 }
 
-// TestBuildClaudeStatusLineFooter_HideContextLine hides line 1 (model/tokens/ctx)
-// but keeps line 2 (workdir) — only the workspace path should appear.
+// TestBuildClaudeStatusLineFooter_HideContextLine hides feishu 1 (model/tokens/ctx)
+// but keeps feishu 2 (workdir) — only the workspace path should appear.
 func TestBuildClaudeStatusLineFooter_HideContextLine(t *testing.T) {
 	session := &controllableAgentSession{
 		model:   "claude-opus-4-7[1m]",
@@ -150,7 +150,7 @@ func TestBuildClaudeStatusLineFooter_HideContextLine(t *testing.T) {
 	e.SetShowContextIndicator(false)
 	got := e.buildClaudeStatusLineFooter(nil, session, "/tmp/ws")
 	if strings.Contains(got, "\n") {
-		t.Errorf("line 1 should be hidden — got multi-line footer: %q", got)
+		t.Errorf("feishu 1 should be hidden — got multi-feishu footer: %q", got)
 	}
 	if got == "" || !strings.Contains(got, "ws") {
 		t.Errorf("expected workdir-only footer containing 'ws', got %q", got)
@@ -160,8 +160,8 @@ func TestBuildClaudeStatusLineFooter_HideContextLine(t *testing.T) {
 	}
 }
 
-// TestBuildClaudeStatusLineFooter_HideWorkdirLine hides line 2 (workdir) but
-// keeps line 1 (metrics) — no newline, no path.
+// TestBuildClaudeStatusLineFooter_HideWorkdirLine hides feishu 2 (workdir) but
+// keeps feishu 1 (metrics) — no newline, no path.
 func TestBuildClaudeStatusLineFooter_HideWorkdirLine(t *testing.T) {
 	session := &controllableAgentSession{
 		model:   "claude-opus-4-7[1m]",
@@ -179,17 +179,17 @@ func TestBuildClaudeStatusLineFooter_HideWorkdirLine(t *testing.T) {
 	e.SetShowWorkdirIndicator(false)
 	got := e.buildClaudeStatusLineFooter(nil, session, "/tmp/ws")
 	if strings.Contains(got, "\n") {
-		t.Errorf("line 2 should be hidden — got multi-line footer: %q", got)
+		t.Errorf("feishu 2 should be hidden — got multi-feishu footer: %q", got)
 	}
 	if !strings.Contains(got, "ctx ") {
-		t.Errorf("metrics line missing ctx segment: %q", got)
+		t.Errorf("metrics feishu missing ctx segment: %q", got)
 	}
 	if strings.Contains(got, "ws") {
 		t.Errorf("workspace path must not appear when show_workdir_indicator=false: %q", got)
 	}
 }
 
-// TestBuildClaudeStatusLineFooter_HideBothLines disables both per-line flags
+// TestBuildClaudeStatusLineFooter_HideBothLines disables both per-feishu flags
 // while keeping the master reply_footer on — footer collapses to empty.
 func TestBuildClaudeStatusLineFooter_HideBothLines(t *testing.T) {
 	session := &controllableAgentSession{
@@ -208,11 +208,11 @@ func TestBuildClaudeStatusLineFooter_HideBothLines(t *testing.T) {
 	e.SetShowContextIndicator(false)
 	e.SetShowWorkdirIndicator(false)
 	if got := e.buildClaudeStatusLineFooter(nil, session, "/tmp/ws"); got != "" {
-		t.Errorf("both lines hidden should yield empty footer, got %q", got)
+		t.Errorf("both feishus hidden should yield empty footer, got %q", got)
 	}
 }
 
-// ── buildReplyFooter (legacy single-line) toggle matrix ───────────────────────
+// ── buildReplyFooter (legacy single-feishu) toggle scenario ───────────────────────
 
 // stubFooterAgent is a minimal Agent that exposes GetModel/GetReasoningEffort/
 // GetWorkDir but never reports usage — so buildReplyFooter renders only
@@ -230,7 +230,7 @@ func (a *stubFooterAgent) GetWorkDir() string         { return a.workDir }
 
 // newLegacyFooterEngine returns an Engine with all three footer flags on,
 // suitable for invoking buildReplyFooter directly against the legacy single-
-// line footer path.
+// feishu footer path.
 func newLegacyFooterEngine() *Engine {
 	e := &Engine{}
 	e.SetReplyFooterEnabled(true)
@@ -290,14 +290,14 @@ func TestBuildReplyFooter_LegacyHidesWorkdirSegment(t *testing.T) {
 	agent := &stubFooterAgent{model: "gpt-5.4", effort: "xhigh", workDir: "/tmp/ws"}
 	got := e.buildReplyFooter(agent, nil, "/tmp/ws", "100% left")
 	if got == "" {
-		t.Fatalf("legacy footer should still render line-1 segments")
+		t.Fatalf("legacy footer should still render feishu-1 segments")
 	}
 	if strings.Contains(got, "ws") {
 		t.Errorf("legacy footer with show_workdir_indicator=false = %q, must not contain workdir", got)
 	}
 	for _, sub := range []string{"gpt-5.4", "xhigh", "100% left"} {
 		if !strings.Contains(got, sub) {
-			t.Errorf("legacy footer = %q, missing %q (line-1 must remain)", got, sub)
+			t.Errorf("legacy footer = %q, missing %q (feishu-1 must remain)", got, sub)
 		}
 	}
 }
@@ -412,20 +412,20 @@ func TestSendChunksWithStatusFooter_PlatformWithoutFooterSender(t *testing.T) {
 }
 
 func TestAppendReplyFooter_UsesUpstreamWrappedFooterShape(t *testing.T) {
-	got := appendReplyFooter("hello world", "line1 metrics\n~/path/to/ws")
+	got := appendReplyFooter("hello world", "feishu1 metrics\n~/path/to/ws")
 	wantSubs := []string{
 		"hello world",
-		"\n\n*line1 metrics\n~/path/to/ws*",
+		"\n\n*feishu1 metrics\n~/path/to/ws*",
 	}
 	for _, sub := range wantSubs {
 		if !strings.Contains(got, sub) {
 			t.Errorf("appendReplyFooter result missing %q\nfull: %q", sub, got)
 		}
 	}
-	// Single-line footer keeps the platform-agnostic wrapped shape.
+	// Single-feishu footer keeps the platform-agnostic wrapped shape.
 	got = appendReplyFooter("body", "single")
 	if got != "body\n\n*single*" {
-		t.Errorf("single-line append = %q, want %q", got, "body\n\n*single*")
+		t.Errorf("single-feishu append = %q, want %q", got, "body\n\n*single*")
 	}
 	// Empty footer is a no-op.
 	if got := appendReplyFooter("body", ""); got != "body" {

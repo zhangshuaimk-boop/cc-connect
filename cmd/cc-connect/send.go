@@ -380,8 +380,8 @@ Options:
       --audio <path>       Send an audio attachment (repeatable)
       --video <path>       Send a video attachment (repeatable)
       --stdin              Read message from stdin (best for long/special-char messages)
-      --at-users <ids>     @ user IDs, comma-separated (DingTalk)
-      --at-all             @ everyone (DingTalk)
+      --at-users <ids>     @ user IDs, comma-separated
+      --at-all             @ everyone
   -p, --project <name>     Target project (optional if only one project)
   -s, --session <key>      Target session key (optional, picks first active)
       --data-dir <path>    Data directory (default: ~/.cc-connect)

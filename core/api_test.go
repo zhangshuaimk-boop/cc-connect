@@ -351,6 +351,101 @@ func TestHandleSend_WorkDirFollowsDirectParticipantOnInboundSession(t *testing.T
 	}
 }
 
+func TestHandleSend_HTTPBoundaries(t *testing.T) {
+	api := &APIServer{engines: map[string]*Engine{}}
+
+	tests := []struct {
+		name   string
+		method string
+		body   string
+		status int
+		want   string
+	}{
+		{
+			name:   "rejects non-post",
+			method: http.MethodGet,
+			body:   `{}`,
+			status: http.StatusMethodNotAllowed,
+			want:   "POST only",
+		},
+		{
+			name:   "rejects malformed json",
+			method: http.MethodPost,
+			body:   `{bad`,
+			status: http.StatusBadRequest,
+			want:   "invalid JSON",
+		},
+		{
+			name:   "rejects empty send content",
+			method: http.MethodPost,
+			body:   `{"project":"test","session_key":"s1"}`,
+			status: http.StatusBadRequest,
+			want:   "message, tts_text, or attachment is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "/send", strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+			api.handleSend(rec, req)
+
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tt.status, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.want) {
+				t.Fatalf("body = %q, want substring %q", rec.Body.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleSessions_ReturnsOnlyInteractiveSessionsWithPlatforms(t *testing.T) {
+	engineA := NewEngine("alpha", &stubAgent{}, []Platform{&stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}}, "", LangEnglish)
+	engineA.interactiveStates["feishu:chat:user"] = &interactiveState{
+		platform: &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}},
+		replyCtx: "ctx",
+	}
+	engineA.interactiveStates["missing-platform"] = &interactiveState{}
+
+	engineB := NewEngine("beta", &stubAgent{}, []Platform{&stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "slack"}}}, "", LangEnglish)
+	engineB.interactiveStates["slack:chan:user"] = &interactiveState{
+		platform: &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "slack"}},
+		replyCtx: "ctx",
+	}
+
+	api := &APIServer{engines: map[string]*Engine{"alpha": engineA, "beta": engineB}}
+	req := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	rec := httptest.NewRecorder()
+
+	api.handleSessions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var sessions []struct {
+		Project    string `json:"project"`
+		SessionKey string `json:"session_key"`
+		Platform   string `json:"platform"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&sessions); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	got := map[string]string{}
+	for _, session := range sessions {
+		got[session.Project+"/"+session.SessionKey] = session.Platform
+	}
+	if len(got) != 2 {
+		t.Fatalf("sessions = %#v, want exactly two sessions with platforms", got)
+	}
+	if got["alpha/feishu:chat:user"] != "feishu" || got["beta/slack:chan:user"] != "slack" {
+		t.Fatalf("sessions = %#v", got)
+	}
+	if _, ok := got["alpha/missing-platform"]; ok {
+		t.Fatalf("session without platform should be omitted: %#v", got)
+	}
+}
+
 func TestHandleCronExec_TriggersJob(t *testing.T) {
 	store, err := NewCronStore(t.TempDir())
 	if err != nil {
@@ -359,7 +454,7 @@ func TestHandleCronExec_TriggersJob(t *testing.T) {
 	scheduler := NewCronScheduler(store)
 
 	platform := &stubCronReplyTargetPlatform{
-		stubPlatformEngine: stubPlatformEngine{n: "discord"},
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 	}
 	agentSession := newResultAgentSession("triggered from local api")
 	engine := NewEngine("test", &resultAgent{session: agentSession}, []Platform{platform}, "", LangEnglish)
@@ -370,7 +465,7 @@ func TestHandleCronExec_TriggersJob(t *testing.T) {
 	job := &CronJob{
 		ID:          "job-run-api",
 		Project:     "test",
-		SessionKey:  "discord:channel-1:user-1",
+		SessionKey:  "feishu:channel-1:user-1",
 		CronExpr:    "0 6 * * *",
 		Prompt:      "run now",
 		Description: "Run from API",
@@ -412,7 +507,7 @@ func TestHandleCronExec_RunAliasRouteTriggersJob(t *testing.T) {
 	scheduler := NewCronScheduler(store)
 
 	platform := &stubCronReplyTargetPlatform{
-		stubPlatformEngine: stubPlatformEngine{n: "discord"},
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 	}
 	agentSession := newResultAgentSession("triggered from local api alias")
 	engine := NewEngine("test", &resultAgent{session: agentSession}, []Platform{platform}, "", LangEnglish)
@@ -423,7 +518,7 @@ func TestHandleCronExec_RunAliasRouteTriggersJob(t *testing.T) {
 	job := &CronJob{
 		ID:          "job-run-api-alias",
 		Project:     "test",
-		SessionKey:  "discord:channel-1:user-1",
+		SessionKey:  "feishu:channel-1:user-1",
 		CronExpr:    "0 6 * * *",
 		Prompt:      "run alias now",
 		Description: "Run from API alias",
@@ -469,7 +564,7 @@ func TestHandleCronExec_ProjectMissingIsBadRequest(t *testing.T) {
 	job := &CronJob{
 		ID:         "job-run-missing-project",
 		Project:    "ghost",
-		SessionKey: "discord:channel-1:user-1",
+		SessionKey: "feishu:channel-1:user-1",
 		CronExpr:   "0 6 * * *",
 		Prompt:     "run now",
 		Enabled:    true,

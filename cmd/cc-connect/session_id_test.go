@@ -46,10 +46,10 @@ func TestFindAgentSessionID_PlainFilename(t *testing.T) {
 	dir := t.TempDir()
 	writeSessionFileAt(t,
 		filepath.Join(dir, "sessions", "mybot.json"),
-		newTestSessionFileData("discord:111:222", "uuid-plain"),
+		newTestSessionFileData("feishu:oc_111:ou_222", "uuid-plain"),
 	)
 
-	got, err := findAgentSessionID(dir, "mybot", "discord:111:222")
+	got, err := findAgentSessionID(dir, "mybot", "feishu:oc_111:ou_222")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,10 +62,10 @@ func TestFindAgentSessionID_HashedFilename(t *testing.T) {
 	dir := t.TempDir()
 	writeSessionFileAt(t,
 		filepath.Join(dir, "sessions", "mybot_a1b2c3d4.json"),
-		newTestSessionFileData("discord:111:222", "uuid-hashed"),
+		newTestSessionFileData("feishu:oc_111:ou_222", "uuid-hashed"),
 	)
 
-	got, err := findAgentSessionID(dir, "mybot", "discord:111:222")
+	got, err := findAgentSessionID(dir, "mybot", "feishu:oc_111:ou_222")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,10 +78,10 @@ func TestFindAgentSessionID_WorkspaceFilename(t *testing.T) {
 	dir := t.TempDir()
 	writeSessionFileAt(t,
 		filepath.Join(dir, "sessions", "mybot_ws_abcd1234.json"),
-		newTestSessionFileData("discord:111:222", "uuid-ws"),
+		newTestSessionFileData("feishu:oc_111:ou_222", "uuid-ws"),
 	)
 
-	got, err := findAgentSessionID(dir, "mybot", "discord:111:222")
+	got, err := findAgentSessionID(dir, "mybot", "feishu:oc_111:ou_222")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,10 +95,10 @@ func TestFindAgentSessionID_LegacyPath(t *testing.T) {
 	// Legacy: file directly in dataDir, not in sessions/ subdir
 	writeSessionFileAt(t,
 		filepath.Join(dir, "mybot.json"),
-		newTestSessionFileData("discord:111:222", "uuid-legacy"),
+		newTestSessionFileData("feishu:oc_111:ou_222", "uuid-legacy"),
 	)
 
-	got, err := findAgentSessionID(dir, "mybot", "discord:111:222")
+	got, err := findAgentSessionID(dir, "mybot", "feishu:oc_111:ou_222")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,10 +111,10 @@ func TestFindAgentSessionID_LegacySessionsJsonNaming(t *testing.T) {
 	dir := t.TempDir()
 	writeSessionFileAt(t,
 		filepath.Join(dir, "mybot.sessions.json"),
-		newTestSessionFileData("discord:111:222", "uuid-legacy-naming"),
+		newTestSessionFileData("feishu:oc_111:ou_222", "uuid-legacy-naming"),
 	)
 
-	got, err := findAgentSessionID(dir, "mybot", "discord:111:222")
+	got, err := findAgentSessionID(dir, "mybot", "feishu:oc_111:ou_222")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,33 +127,33 @@ func TestFindAgentSessionID_MultipleFiles_CorrectMatch(t *testing.T) {
 	dir := t.TempDir()
 	sessDir := filepath.Join(dir, "sessions")
 
-	// File 1: contains discord key
+	// File 1: contains first Feishu key
 	writeSessionFileAt(t,
 		filepath.Join(sessDir, "mybot_ws_aaaa1111.json"),
-		newTestSessionFileData("discord:111:222", "uuid-discord"),
+		newTestSessionFileData("feishu:oc_111:ou_222", "uuid-feishu-a"),
 	)
-	// File 2: contains telegram key (different session key)
+	// File 2: contains second Feishu key
 	writeSessionFileAt(t,
 		filepath.Join(sessDir, "mybot_ws_bbbb2222.json"),
-		newTestSessionFileData("telegram:333:444", "uuid-telegram"),
+		newTestSessionFileData("feishu:oc_333:ou_444", "uuid-feishu-b"),
 	)
 
-	// Should find discord in file 1
-	got, err := findAgentSessionID(dir, "mybot", "discord:111:222")
+	// Should find the first Feishu key in file 1
+	got, err := findAgentSessionID(dir, "mybot", "feishu:oc_111:ou_222")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "uuid-discord" {
-		t.Fatalf("got %q, want uuid-discord", got)
+	if got != "uuid-feishu-a" {
+		t.Fatalf("got %q, want uuid-feishu-a", got)
 	}
 
-	// Should find telegram in file 2
-	got, err = findAgentSessionID(dir, "mybot", "telegram:333:444")
+	// Should find the second Feishu key in file 2
+	got, err = findAgentSessionID(dir, "mybot", "feishu:oc_333:ou_444")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "uuid-telegram" {
-		t.Fatalf("got %q, want uuid-telegram", got)
+	if got != "uuid-feishu-b" {
+		t.Fatalf("got %q, want uuid-feishu-b", got)
 	}
 }
 
@@ -167,7 +167,7 @@ func TestFindAgentSessionID_NoActiveSession(t *testing.T) {
 		},
 	)
 
-	_, err := findAgentSessionID(dir, "mybot", "discord:111:222")
+	_, err := findAgentSessionID(dir, "mybot", "feishu:oc_111:ou_222")
 	if err == nil {
 		t.Fatal("expected error for missing session key")
 	}
@@ -177,10 +177,10 @@ func TestFindAgentSessionID_EmptyAgentSessionID(t *testing.T) {
 	dir := t.TempDir()
 	writeSessionFileAt(t,
 		filepath.Join(dir, "sessions", "mybot.json"),
-		newTestSessionFileData("discord:111:222", ""),
+		newTestSessionFileData("feishu:oc_111:ou_222", ""),
 	)
 
-	_, err := findAgentSessionID(dir, "mybot", "discord:111:222")
+	_, err := findAgentSessionID(dir, "mybot", "feishu:oc_111:ou_222")
 	if err == nil {
 		t.Fatal("expected error for empty agent session ID")
 	}
@@ -189,7 +189,7 @@ func TestFindAgentSessionID_EmptyAgentSessionID(t *testing.T) {
 func TestFindAgentSessionID_NoSessionFile(t *testing.T) {
 	dir := t.TempDir()
 
-	_, err := findAgentSessionID(dir, "nonexistent", "discord:111:222")
+	_, err := findAgentSessionID(dir, "nonexistent", "feishu:oc_111:ou_222")
 	if err == nil {
 		t.Fatal("expected error for missing session file")
 	}
@@ -202,16 +202,16 @@ func TestMatchesProject(t *testing.T) {
 		want     bool
 	}{
 		{"mybot.json", "mybot", true},
-		{"mybot_abc123.json", "mybot", true},          // hash suffix
-		{"mybot_ws_abc123.json", "mybot", true},        // workspace hash suffix
-		{"mybot.sessions.json", "mybot", true},         // legacy naming
-		{"other.json", "mybot", false},                 // different project
-		{"mybotextra.json", "mybot", false},             // no underscore separator
-		{"mybot.txt", "mybot", false},                  // wrong extension
-		{"mybot_extra.json", "mybot", false},            // suffix is not hex
-		{"mybot_ws_notahex.json", "mybot", false},       // ws_ prefix but non-hex suffix
-		{"mybot_AABB00.json", "mybot", true},            // uppercase hex
-		{"mybot_ws.json", "mybot", false},               // "ws" alone is not hex (Codex #1 fix)
+		{"mybot_abc123.json", "mybot", true},      // hash suffix
+		{"mybot_ws_abc123.json", "mybot", true},   // workspace hash suffix
+		{"mybot.sessions.json", "mybot", true},    // legacy naming
+		{"other.json", "mybot", false},            // different project
+		{"mybotextra.json", "mybot", false},       // no underscore separator
+		{"mybot.txt", "mybot", false},             // wrong extension
+		{"mybot_extra.json", "mybot", false},      // suffix is not hex
+		{"mybot_ws_notahex.json", "mybot", false}, // ws_ prefix but non-hex suffix
+		{"mybot_AABB00.json", "mybot", true},      // uppercase hex
+		{"mybot_ws.json", "mybot", false},         // "ws" alone is not hex (Codex #1 fix)
 	}
 
 	for _, tt := range tests {
@@ -228,10 +228,10 @@ func TestFindAgentSessionID_EmptyAgentID_ReturnsSpecificError(t *testing.T) {
 	dir := t.TempDir()
 	writeSessionFileAt(t,
 		filepath.Join(dir, "sessions", "mybot.json"),
-		newTestSessionFileData("discord:111:222", ""),
+		newTestSessionFileData("feishu:oc_111:ou_222", ""),
 	)
 
-	_, err := findAgentSessionID(dir, "mybot", "discord:111:222")
+	_, err := findAgentSessionID(dir, "mybot", "feishu:oc_111:ou_222")
 	if err == nil {
 		t.Fatal("expected error for empty agent session ID")
 	}
@@ -255,8 +255,8 @@ func TestFindAgentSessionID_DuplicateKey_PrefersNewerUpdatedAt(t *testing.T) {
 			Sessions: map[string]*sessionData{
 				"s1": {ID: "s1", AgentSessionID: "uuid-old", UpdatedAt: oldTime},
 			},
-			ActiveSession: map[string]string{"discord:111:222": "s1"},
-			UserSessions:  map[string][]string{"discord:111:222": {"s1"}},
+			ActiveSession: map[string]string{"feishu:oc_111:ou_222": "s1"},
+			UserSessions:  map[string][]string{"feishu:oc_111:ou_222": {"s1"}},
 		},
 	)
 	// File 2: same session key, newer UpdatedAt
@@ -266,12 +266,12 @@ func TestFindAgentSessionID_DuplicateKey_PrefersNewerUpdatedAt(t *testing.T) {
 			Sessions: map[string]*sessionData{
 				"s1": {ID: "s1", AgentSessionID: "uuid-new", UpdatedAt: newTime},
 			},
-			ActiveSession: map[string]string{"discord:111:222": "s1"},
-			UserSessions:  map[string][]string{"discord:111:222": {"s1"}},
+			ActiveSession: map[string]string{"feishu:oc_111:ou_222": "s1"},
+			UserSessions:  map[string][]string{"feishu:oc_111:ou_222": {"s1"}},
 		},
 	)
 
-	got, err := findAgentSessionID(dir, "mybot", "discord:111:222")
+	got, err := findAgentSessionID(dir, "mybot", "feishu:oc_111:ou_222")
 	if err != nil {
 		t.Fatal(err)
 	}

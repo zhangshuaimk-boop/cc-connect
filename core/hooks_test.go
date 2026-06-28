@@ -20,11 +20,11 @@ func boolPtr(v bool) *bool { return &v }
 func TestNewHookManager_ValidatesConfig(t *testing.T) {
 	hooks := []HookConfig{
 		{Event: "message.received", Type: "command", Command: "echo ok"},
-		{Event: "", Type: "command", Command: "echo bad"},         // missing event
-		{Event: "error", Type: "http", URL: ""},                   // missing url
-		{Event: "error", Type: "http", URL: "ftp://bad"},          // bad url scheme
-		{Event: "error", Type: "unknown", Command: "echo"},        // bad type
-		{Event: "error", Type: "command", Command: ""},            // missing command
+		{Event: "", Type: "command", Command: "echo bad"},  // missing event
+		{Event: "error", Type: "http", URL: ""},            // missing url
+		{Event: "error", Type: "http", URL: "ftp://bad"},   // bad url scheme
+		{Event: "error", Type: "unknown", Command: "echo"}, // bad type
+		{Event: "error", Type: "command", Command: ""},     // missing command
 		{Event: "message.sent", Type: "http", URL: "http://ok.com"},
 	}
 	hm := NewHookManager("test", hooks, "sh", "-c", "")
@@ -126,7 +126,7 @@ func TestEmit_CommandHook(t *testing.T) {
 	hm.Emit(HookEvent{
 		Event:      HookEventMessageReceived,
 		SessionKey: "tg:1:1",
-		Platform:   "telegram",
+		Platform:   "feishu",
 		UserName:   "alice",
 		Content:    "hello",
 	})
@@ -155,8 +155,8 @@ func TestEmit_CommandHookEnvVars(t *testing.T) {
 
 	hm.Emit(HookEvent{
 		Event:      HookEventMessageReceived,
-		SessionKey: "slack:C1:U1",
-		Platform:   "slack",
+		SessionKey: "feishu:C1:U1",
+		Platform:   "feishu",
 		UserID:     "U1",
 		UserName:   "bob",
 		Content:    "test msg",
@@ -171,16 +171,16 @@ func TestEmit_CommandHookEnvVars(t *testing.T) {
 	expected := map[string]string{
 		"CC_HOOK_EVENT":       "message.received",
 		"CC_HOOK_PROJECT":     "my-proj",
-		"CC_HOOK_SESSION_KEY": "slack:C1:U1",
-		"CC_HOOK_PLATFORM":    "slack",
+		"CC_HOOK_SESSION_KEY": "feishu:C1:U1",
+		"CC_HOOK_PLATFORM":    "feishu",
 		"CC_HOOK_USER_ID":     "U1",
 		"CC_HOOK_USER_NAME":   "bob",
 		"CC_HOOK_CONTENT":     "test msg",
 	}
 	for k, v := range expected {
-		line := k + "=" + v
-		if !strings.Contains(envStr, line) {
-			t.Errorf("expected env to contain %q", line)
+		feishu := k + "=" + v
+		if !strings.Contains(envStr, feishu) {
+			t.Errorf("expected env to contain %q", feishu)
 		}
 	}
 }
@@ -224,7 +224,7 @@ func TestEmit_HTTPHook(t *testing.T) {
 	hm.Emit(HookEvent{
 		Event:      HookEventError,
 		SessionKey: "tg:1:1",
-		Platform:   "telegram",
+		Platform:   "feishu",
 		Error:      "something failed",
 	})
 
@@ -385,7 +385,7 @@ func TestEventToEnv(t *testing.T) {
 		Timestamp:  time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC),
 		Project:    "myproj",
 		SessionKey: "tg:1:1",
-		Platform:   "telegram",
+		Platform:   "feishu",
 		UserID:     "U123",
 		UserName:   "alice",
 		Content:    "hello world",
@@ -404,7 +404,7 @@ func TestEventToEnv(t *testing.T) {
 		"CC_HOOK_EVENT":       "cron.triggered",
 		"CC_HOOK_PROJECT":     "myproj",
 		"CC_HOOK_SESSION_KEY": "tg:1:1",
-		"CC_HOOK_PLATFORM":    "telegram",
+		"CC_HOOK_PLATFORM":    "feishu",
 		"CC_HOOK_USER_ID":     "U123",
 		"CC_HOOK_USER_NAME":   "alice",
 		"CC_HOOK_CONTENT":     "hello world",

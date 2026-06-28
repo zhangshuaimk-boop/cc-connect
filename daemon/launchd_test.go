@@ -45,6 +45,24 @@ func TestBuildPlist_KeepAliveDoesNotRestartOnCleanExit(t *testing.T) {
 	}
 }
 
+func TestLaunchdManagerBasics(t *testing.T) {
+	enabled, user := CheckLinger()
+	if !enabled {
+		t.Fatal("CheckLinger() = false, want true on launchd")
+	}
+	if user != "" {
+		t.Fatalf("CheckLinger() user = %q, want empty on launchd", user)
+	}
+
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if got := mgr.Platform(); got != "launchd" {
+		t.Fatalf("Platform() = %q, want launchd", got)
+	}
+}
+
 func TestPreferredLaunchdDomainFallsBackToUserWhenGUIDomainUnavailable(t *testing.T) {
 	orig := runLaunchctl
 	t.Cleanup(func() { runLaunchctl = orig })
@@ -63,6 +81,161 @@ func TestPreferredLaunchdDomainFallsBackToUserWhenGUIDomainUnavailable(t *testin
 
 	if got := preferredLaunchdDomain(); got != userDomain {
 		t.Fatalf("preferredLaunchdDomain() = %q, want %q", got, userDomain)
+	}
+}
+
+func TestLaunchdStartKickstartsLoadedTarget(t *testing.T) {
+	orig := runLaunchctl
+	t.Cleanup(func() { runLaunchctl = orig })
+
+	guiDomain := launchdGUIDomain()
+	guiTarget := launchdTarget(guiDomain)
+	var calls []string
+	runLaunchctl = func(args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if len(args) < 2 {
+			return "", nil
+		}
+		switch args[0] {
+		case "print":
+			switch args[1] {
+			case guiDomain:
+				return "subsystem", nil
+			case guiTarget:
+				return "pid = 2468\nstate = running", nil
+			default:
+				return "", fmt.Errorf("unexpected print target %q", args[1])
+			}
+		case "kickstart":
+			if args[len(args)-1] != guiTarget {
+				t.Fatalf("kickstart target = %q, want %q", args[len(args)-1], guiTarget)
+			}
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected launchctl call %v", args)
+		}
+	}
+
+	if err := (&launchdManager{}).Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if !containsCall(calls, "kickstart -kp "+guiTarget) {
+		t.Fatalf("expected kickstart call, calls = %#v", calls)
+	}
+}
+
+func TestLaunchdStartBootstrapsWhenNotLoaded(t *testing.T) {
+	orig := runLaunchctl
+	t.Cleanup(func() { runLaunchctl = orig })
+
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	plistPath := launchdPlistPath()
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir plist dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("plist"), 0o600); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+
+	guiDomain := launchdGUIDomain()
+	guiTarget := launchdTarget(guiDomain)
+	var calls []string
+	runLaunchctl = func(args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if len(args) < 2 {
+			return "", nil
+		}
+		switch args[0] {
+		case "print":
+			switch args[1] {
+			case guiDomain:
+				return "subsystem", nil
+			case guiTarget:
+				return "not loaded", fmt.Errorf("exit status 113")
+			default:
+				return "", fmt.Errorf("unexpected print target %q", args[1])
+			}
+		case "bootstrap":
+			if args[1] != guiDomain || args[2] != plistPath {
+				t.Fatalf("bootstrap args = %v, want domain %q plist %q", args, guiDomain, plistPath)
+			}
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected launchctl call %v", args)
+		}
+	}
+
+	if err := (&launchdManager{}).Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if !containsCall(calls, "bootstrap "+guiDomain+" "+plistPath) {
+		t.Fatalf("expected bootstrap call, calls = %#v", calls)
+	}
+}
+
+func TestLaunchdStopTriesFallbackDomain(t *testing.T) {
+	orig := runLaunchctl
+	t.Cleanup(func() { runLaunchctl = orig })
+
+	guiDomain := launchdGUIDomain()
+	userDomain := launchdUserDomain()
+	guiTarget := launchdTarget(guiDomain)
+	userTarget := launchdTarget(userDomain)
+	var calls []string
+	runLaunchctl = func(args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if len(args) < 2 {
+			return "", nil
+		}
+		switch args[0] {
+		case "print":
+			if args[1] == guiDomain {
+				return "subsystem", nil
+			}
+			return "", nil
+		case "bootout":
+			if args[1] == guiTarget {
+				return "not loaded", fmt.Errorf("exit status 113")
+			}
+			if args[1] == userTarget {
+				return "", nil
+			}
+			return "", fmt.Errorf("unexpected bootout target %q", args[1])
+		default:
+			return "", fmt.Errorf("unexpected launchctl call %v", args)
+		}
+	}
+
+	if err := (&launchdManager{}).Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if !containsCall(calls, "bootout "+guiTarget) || !containsCall(calls, "bootout "+userTarget) {
+		t.Fatalf("expected both bootout attempts, calls = %#v", calls)
+	}
+}
+
+func TestLaunchdUninstallRemovesPlist(t *testing.T) {
+	orig := runLaunchctl
+	t.Cleanup(func() { runLaunchctl = orig })
+
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	plistPath := launchdPlistPath()
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir plist dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("plist"), 0o600); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+
+	runLaunchctl = func(args ...string) (string, error) { return "", nil }
+
+	if err := (&launchdManager{}).Uninstall(); err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if _, err := os.Stat(plistPath); !os.IsNotExist(err) {
+		t.Fatalf("plist should be removed, stat err = %v", err)
 	}
 }
 

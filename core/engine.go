@@ -27,15 +27,7 @@ import (
 )
 
 const maxPlatformMessageLen = 4000
-const telegramBotCommandLimit = 100
 const defaultMaxQueuedMessages = 5 // default cap for queued messages per session
-
-// defaultPendingRestartTimeout is how long the post-restart notify
-// dispatcher waits for the target platform to reach ready before
-// dropping the notify with a warning. 10s covers the typical 2-3s
-// Telegram connect window with margin and is short enough that a stuck
-// platform does not block startup logging indefinitely.
-const defaultPendingRestartTimeout = 10 * time.Second
 
 // previewText truncates s to maxRunes runes for safe inclusion in debug logs.
 // Truncation uses runes (not bytes) so multi-byte characters render cleanly.
@@ -93,211 +85,10 @@ var CurrentVersion string
 // ErrAttachmentSendDisabled indicates that side-channel image/file delivery is disabled by config.
 var ErrAttachmentSendDisabled = errors.New("attachment send is disabled by config")
 
-// RestartRequest carries info needed to send a post-restart notification.
-type RestartRequest struct {
-	SessionKey string `json:"session_key"`
-	Platform   string `json:"platform"`
-}
-
 type replyFooterUsageCache struct {
 	text      string
 	fetchedAt time.Time
 }
-
-// SaveRestartNotify persists restart info so the new process can send
-// a "restart successful" message after startup.
-func SaveRestartNotify(dataDir string, req RestartRequest) error {
-	dir := filepath.Join(dataDir, "run")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		slog.Warn("SaveRestartNotify: mkdir failed", "dir", dir, "error", err)
-	}
-	data, _ := json.Marshal(req)
-	return os.WriteFile(filepath.Join(dir, "restart_notify"), data, 0o644)
-}
-
-// ConsumeRestartNotify reads and deletes the restart notification file.
-// Returns nil if no notification is pending.
-func ConsumeRestartNotify(dataDir string) *RestartRequest {
-	p := filepath.Join(dataDir, "run", "restart_notify")
-	data, err := os.ReadFile(p)
-	if err != nil {
-		return nil
-	}
-	os.Remove(p)
-	var req RestartRequest
-	if json.Unmarshal(data, &req) != nil {
-		return nil
-	}
-	return &req
-}
-
-// SendRestartNotification sends a "restart successful" message to the
-// platform/session that initiated the restart. For async-recoverable
-// platforms that may not be ready yet at startup, the call is queued
-// and dispatched on the first OnPlatformReady for the matching platform
-// (see issue #1383).
-func (e *Engine) SendRestartNotification(platformName, sessionKey string) {
-	req := &RestartRequest{Platform: platformName, SessionKey: sessionKey}
-	e.SetPendingRestartNotify(req)
-}
-
-// SetPendingRestartNotify queues a restart notification for dispatch
-// when the target platform becomes ready. Replaces any previously queued
-// notify. If the target platform is already ready, the notify is
-// dispatched on a background goroutine with retry on send failure.
-func (e *Engine) SetPendingRestartNotify(req *RestartRequest) {
-	if req == nil {
-		return
-	}
-	e.pendingRestartMu.Lock()
-	e.pendingRestartNotify = req
-	e.pendingRestartFiredCh = make(chan struct{})
-	firedCh := e.pendingRestartFiredCh
-	e.pendingRestartMu.Unlock()
-
-	// If the target platform is already ready, fire the dispatch on a
-	// goroutine so the caller (main startup) is not blocked. If not yet
-	// ready, OnPlatformReady will pick it up. A safety goroutine drops
-	// the notify after a timeout if the platform never reaches ready.
-	go e.runPendingRestartNotify(req, firedCh)
-}
-
-// ConsumePendingRestartNotify returns the currently queued notify (if any)
-// and clears it. Used by tests.
-func (e *Engine) ConsumePendingRestartNotify() *RestartRequest {
-	e.pendingRestartMu.Lock()
-	defer e.pendingRestartMu.Unlock()
-	req := e.pendingRestartNotify
-	e.pendingRestartNotify = nil
-	return req
-}
-
-// SetPendingRestartTimeout overrides the safety timeout used by
-// runPendingRestartNotify. Production code uses defaultPendingRestartTimeout
-// (10s); tests use this to exercise the timeout path quickly.
-func (e *Engine) SetPendingRestartTimeout(d time.Duration) {
-	e.pendingRestartTimeout = d
-}
-
-// runPendingRestartNotify dispatches the notify for a platform that is
-// already ready, with bounded retry on transient send failure. The fired
-// channel is closed when the notify is fully resolved (success, exhausted
-// retries, or platform dropped from engine). This is called from
-// SetPendingRestartNotify on a background goroutine and from
-// onPlatformReady (also on a goroutine).
-func (e *Engine) runPendingRestartNotify(req *RestartRequest, firedCh chan struct{}) {
-	defer close(firedCh)
-
-	// Wait briefly for the platform to reach ready if it's not already.
-	// Upper bound: matches the typical Telegram 2-3 s connect window
-	// with margin (see defaultPendingRestartTimeout), and short enough
-	// that a stuck platform does not block startup logging forever.
-	timeout := e.pendingRestartTimeout
-	if timeout <= 0 {
-		timeout = defaultPendingRestartTimeout
-	}
-	deadline := time.Now().Add(timeout)
-	for {
-		e.pendingRestartMu.Lock()
-		stillQueued := e.pendingRestartNotify == req
-		e.pendingRestartMu.Unlock()
-		if !stillQueued {
-			return
-		}
-		if e.lookupReadyPlatform(req.Platform) != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			slog.Warn("restart notify: target platform did not reach ready in time, dropping",
-				"platform", req.Platform, "session", req.SessionKey, "timeout", timeout)
-			e.clearPendingRestart(req)
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	if err := e.dispatchRestartNotify(req); err != nil {
-		slog.Warn("restart notify: dispatch failed after retries",
-			"platform", req.Platform, "session", req.SessionKey, "error", err)
-	}
-	e.clearPendingRestart(req)
-}
-
-// lookupReadyPlatform returns the platform with the given name if it has
-// reached ready state, otherwise nil.
-func (e *Engine) lookupReadyPlatform(platformName string) Platform {
-	e.platformLifecycleMu.Lock()
-	defer e.platformLifecycleMu.Unlock()
-	for p, ready := range e.platformReady {
-		if ready && p.Name() == platformName {
-			return p
-		}
-	}
-	return nil
-}
-
-// clearPendingRestart removes the queued notify if it is still the same
-// request (avoids clearing a newer notify that replaced this one).
-func (e *Engine) clearPendingRestart(req *RestartRequest) {
-	e.pendingRestartMu.Lock()
-	if e.pendingRestartNotify == req {
-		e.pendingRestartNotify = nil
-	}
-	e.pendingRestartMu.Unlock()
-}
-
-// dispatchRestartNotify sends the notify to the target platform with up
-// to 3 attempts (initial + 2 retries) on transient failure. The
-// platform must already be ready when this is called.
-func (e *Engine) dispatchRestartNotify(req *RestartRequest) error {
-	p := e.lookupReadyPlatform(req.Platform)
-	if p == nil {
-		return fmt.Errorf("platform %q not ready", req.Platform)
-	}
-	rc, ok := p.(ReplyContextReconstructor)
-	if !ok {
-		return fmt.Errorf("platform %q does not support ReconstructReplyCtx", req.Platform)
-	}
-	rctx, err := rc.ReconstructReplyCtx(req.SessionKey)
-	if err != nil {
-		return fmt.Errorf("reconstruct reply ctx: %w", err)
-	}
-	text := e.i18n.T(MsgRestartSuccess)
-	if CurrentVersion != "" {
-		text += fmt.Sprintf(" (%s)", CurrentVersion)
-	}
-
-	backoffs := []time.Duration{0, 500 * time.Millisecond, 1500 * time.Millisecond}
-	var lastErr error
-	for attempt, wait := range backoffs {
-		if wait > 0 {
-			time.Sleep(wait)
-		}
-		if err := e.waitOutgoing(p); err != nil {
-			lastErr = fmt.Errorf("wait outgoing: %w", err)
-			slog.Warn("restart notify: wait outgoing failed",
-				"platform", req.Platform, "attempt", attempt+1, "error", err)
-			continue
-		}
-		if err := p.Send(e.ctx, rctx, text); err != nil {
-			lastErr = err
-			slog.Warn("restart notify: send failed, will retry",
-				"platform", req.Platform, "session", req.SessionKey,
-				"attempt", attempt+1, "max_attempts", len(backoffs), "error", err)
-			continue
-		}
-		if attempt > 0 {
-			slog.Info("restart notify: send succeeded after retry",
-				"platform", req.Platform, "session", req.SessionKey, "attempt", attempt+1)
-		}
-		return nil
-	}
-	return lastErr
-}
-
-// RestartCh is signaled when /restart is invoked. main listens on it
-// to perform a graceful shutdown followed by syscall.Exec.
-var RestartCh = make(chan RestartRequest, 1)
 
 // DisplayCfg controls how intermediate messages are surfaced.
 // A value of -1 means "use default", 0 means "no truncation".
@@ -430,7 +221,7 @@ type Engine struct {
 	// Terminal observation (--observe)
 	observeEnabled    bool
 	observeProjectDir string // ~/.claude/projects/{projectKey}
-	observeSessionKey string // e.g. "slack:C123:U456" — target for forwarding
+	observeSessionKey string // target session key for forwarding
 	observeCancel     context.CancelFunc
 
 	// Interactive agent session management
@@ -446,7 +237,7 @@ type Engine struct {
 	// pendingRestartNotify is queued at startup if a /restart was consumed
 	// from the run/restart_notify file. It is dispatched on the first
 	// OnPlatformReady for the matching platform name, so async platforms
-	// (Telegram, Weixin, Matrix, Discord) have a chance to actually connect
+	// with async recovery have a chance to actually connect
 	// before the post-restart message is sent. See issue #1383.
 	pendingRestartMu      sync.Mutex
 	pendingRestartNotify  *RestartRequest
@@ -959,7 +750,7 @@ func (e *Engine) SetAttachmentSendEnabled(v bool) {
 
 // SetObserveConfig enables terminal session observation.
 // projectDir is the Claude Code project directory containing session JSONL files.
-// sessionKey identifies the Slack channel to forward messages to.
+// sessionKey identifies the channel to forward messages to.
 func (e *Engine) SetObserveConfig(projectDir, sessionKey string) {
 	e.observeEnabled = true
 	e.observeProjectDir = projectDir
@@ -1069,125 +860,6 @@ func (e *Engine) AddCommand(name, description, prompt, exec, workDir, source str
 // ClearCommands removes all commands from the given source.
 func (e *Engine) ClearCommands(source string) {
 	e.commands.ClearSource(source)
-}
-
-// AddAlias registers a command alias.
-func (e *Engine) AddAlias(name, command string) {
-	e.aliasMu.Lock()
-	defer e.aliasMu.Unlock()
-	e.aliases[name] = command
-}
-
-func (e *Engine) SetAliasSaveAddFunc(fn func(name, command string) error) {
-	e.aliasSaveAddFunc = fn
-}
-
-func (e *Engine) SetAliasSaveDelFunc(fn func(name string) error) {
-	e.aliasSaveDelFunc = fn
-}
-
-// ClearAliases removes all aliases (for config reload).
-func (e *Engine) ClearAliases() {
-	e.aliasMu.Lock()
-	defer e.aliasMu.Unlock()
-	e.aliases = make(map[string]string)
-}
-
-// resolveDisabledCmds resolves a list of command names (including "*" wildcard)
-// to a set of canonical command IDs.
-func resolveDisabledCmds(cmds []string) map[string]bool {
-	m := make(map[string]bool, len(cmds))
-	for _, c := range cmds {
-		c = strings.ToLower(strings.TrimPrefix(c, "/"))
-		if c == "*" {
-			for _, bc := range builtinCommands {
-				m[bc.id] = true
-			}
-			return m
-		}
-		if id := matchPrefix(c, builtinCommands); id != "" {
-			m[id] = true
-		} else {
-			m[c] = true
-		}
-	}
-	return m
-}
-
-// GetDisabledCommands returns the list of disabled command IDs for this project.
-func (e *Engine) GetDisabledCommands() []string {
-	e.userRolesMu.RLock()
-	defer e.userRolesMu.RUnlock()
-	out := make([]string, 0, len(e.disabledCmds))
-	for k := range e.disabledCmds {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// SetDisabledCommands sets the list of command IDs that are disabled for this project.
-func (e *Engine) SetDisabledCommands(cmds []string) {
-	e.userRolesMu.Lock()
-	defer e.userRolesMu.Unlock()
-	e.disabledCmds = resolveDisabledCmds(cmds)
-}
-
-// SetUserRoles configures per-user role-based policies. Pass nil to disable.
-func (e *Engine) SetUserRoles(urm *UserRoleManager) {
-	e.userRolesMu.Lock()
-	defer e.userRolesMu.Unlock()
-	if e.userRoles != nil {
-		e.userRoles.Stop()
-	}
-	e.userRoles = urm
-}
-
-// SetAdminFrom sets the admin allowlist for privileged commands.
-// "*" means all users who pass allow_from are admins.
-// Empty string means privileged commands are denied for everyone.
-func (e *Engine) SetAdminFrom(adminFrom string) {
-	e.userRolesMu.Lock()
-	e.adminFrom = strings.TrimSpace(adminFrom)
-	af := e.adminFrom
-	shellDisabled := e.disabledCmds["shell"]
-	e.userRolesMu.Unlock()
-	if af == "" && !shellDisabled {
-		slog.Warn("admin_from is not set — privileged commands (/shell, /show, /dir, /restart, /upgrade) are blocked. "+
-			"Set admin_from in config to enable them, or use disabled_commands to hide them.",
-			"project", e.name)
-	}
-}
-
-// privilegedCommands are commands that require admin_from authorization.
-var privilegedCommands = map[string]bool{
-	"shell":   true,
-	"show":    true,
-	"dir":     true,
-	"restart": true,
-	"upgrade": true,
-	"web":     true,
-	"diff":    true,
-}
-
-// isAdmin checks whether the given user ID is authorized for privileged commands.
-// Unlike AllowList, empty adminFrom means deny-all (fail-closed).
-func (e *Engine) isAdmin(userID string) bool {
-	e.userRolesMu.RLock()
-	af := e.adminFrom
-	e.userRolesMu.RUnlock()
-	if af == "" {
-		return false
-	}
-	if af == "*" {
-		return true
-	}
-	for _, id := range strings.Split(af, ",") {
-		if strings.EqualFold(strings.TrimSpace(id), userID) {
-			return true
-		}
-	}
-	return false
 }
 
 // SetBannedWords replaces the banned words list.
@@ -1356,153 +1028,43 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		Extra:      map[string]any{"job_id": job.ID, "job_description": job.Description},
 	})
 
-	sessionKey := job.SessionKey
-	platformName := ""
-	if idx := strings.Index(sessionKey, ":"); idx > 0 {
-		platformName = sessionKey[:idx]
-	}
-
-	var targetPlatform Platform
-	for _, p := range e.platforms {
-		if p.Name() == platformName {
-			targetPlatform = p
-			break
-		}
-	}
-	// Fallback: in multi-workspace mode the stored session key may be prefixed
-	// with the workspace path (e.g. "/home/user/project:slack:C123:U456").
-	// Search for a known platform name within the key and strip the prefix.
-	if targetPlatform == nil {
-		for _, p := range e.platforms {
-			needle := ":" + p.Name() + ":"
-			if idx := strings.Index(sessionKey, needle); idx >= 0 {
-				targetPlatform = p
-				platformName = p.Name()
-				sessionKey = sessionKey[idx+1:] // strip workspace prefix
-				break
-			}
-		}
-	}
-	if targetPlatform == nil {
-		return fmt.Errorf("platform %q not found for session %q", platformName, sessionKey)
-	}
-
-	rc, ok := targetPlatform.(ReplyContextReconstructor)
-	if !ok {
-		return fmt.Errorf("platform %q does not support proactive messaging (cron)", platformName)
-	}
-
-	runSessionKey := sessionKey
-	var replyCtx any
-	var err error
-	if !job.Mute {
-		if resolver, ok := targetPlatform.(CronReplyTargetResolver); ok {
-			resolvedSessionKey, resolvedReplyCtx, err := resolver.ResolveCronReplyTarget(sessionKey, cronRunTitle(job))
-			if err != nil {
-				if !errors.Is(err, ErrNotSupported) {
-					return fmt.Errorf("resolve cron reply target: %w", err)
-				}
-			} else {
-				if resolvedSessionKey != "" {
-					runSessionKey = resolvedSessionKey
-				}
-				if resolvedReplyCtx != nil {
-					replyCtx = resolvedReplyCtx
-				}
-			}
-		}
-	}
-	if replyCtx == nil {
-		replyCtx, err = rc.ReconstructReplyCtx(runSessionKey)
-		if err != nil {
-			return fmt.Errorf("reconstruct reply context: %w", err)
-		}
-	}
-
-	// Wrap platform to discard all outgoing messages when muted
-	effectivePlatform := targetPlatform
-	if job.Mute {
-		effectivePlatform = &mutePlatform{targetPlatform}
+	target, err := e.resolveScheduledRunTarget(job.SessionKey, cronRunTitle(job), "cron", job.Mute)
+	if err != nil {
+		return err
 	}
 
 	// Notify user that a cron job is executing (unless silent/muted)
-	// Note: this notification uses targetPlatform directly, not the tracking wrapper,
+	// Note: this notification uses the target platform directly, not the mute wrapper,
 	// so it won't count as a "meaningful delivery" for empty response detection.
-	if !job.Mute {
-		silent := false
-		if e.cronScheduler != nil {
-			silent = e.cronScheduler.IsSilent(job)
-		}
-		if !silent {
-			desc := job.Description
-			if desc == "" {
-				if job.IsShellJob() {
-					desc = truncateStr(job.Exec, 40)
-				} else {
-					desc = truncateStr(job.Prompt, 40)
-				}
-			}
-			e.send(targetPlatform, replyCtx, fmt.Sprintf("⏰ %s", desc))
+	silent := false
+	if e.cronScheduler != nil {
+		silent = e.cronScheduler.IsSilent(job)
+	}
+	desc := job.Description
+	if desc == "" {
+		if job.IsShellJob() {
+			desc = truncateStr(job.Exec, 40)
+		} else {
+			desc = truncateStr(job.Prompt, 40)
 		}
 	}
+	e.sendScheduledStartNotice(target.platform, target.replyCtx, job.Mute, silent, desc)
 
 	if job.IsShellJob() {
-		return e.executeCronShell(effectivePlatform, replyCtx, job)
-	}
-
-	content := job.Prompt
-	if strings.HasPrefix(content, "/") {
-		parts := strings.Fields(content)
-		if len(parts) > 0 {
-			cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
-			if skill := e.skills.Resolve(cmd); skill != nil {
-				content = BuildSkillInvocationPrompt(skill, parts[1:])
-			}
-		}
+		return e.executeCronShell(target.effectivePlatform, target.replyCtx, job)
 	}
 
 	msg := &Message{
-		SessionKey:   sessionKey,
-		Platform:     platformName,
+		SessionKey:   target.sessionKey,
+		Platform:     target.platformName,
 		UserID:       "cron",
 		UserName:     "cron",
-		Content:      content,
-		ReplyCtx:     replyCtx,
+		Content:      e.expandScheduledPrompt(job.Prompt),
+		ReplyCtx:     target.replyCtx,
 		ModeOverride: job.Mode,
 	}
 
-	// Resolve workspace-specific agent and sessions for multi-workspace mode.
-	// Priority: job.WorkDir (explicit) > workspace binding > global agent fallback.
-	agent := e.agent
-	sessions := e.sessions
-	workspaceDir := ""
-
-	if e.multiWorkspace {
-		channelID := extractChannelID(sessionKey)
-		if channelID != "" {
-			workspace, _, err := e.resolveWorkspace(targetPlatform, channelID)
-			if err == nil && workspace != "" {
-				wsAgent, wsSessions, _, effectiveDir, err := e.workspaceContext(workspace, sessionKey)
-				if err == nil {
-					agent = wsAgent
-					sessions = wsSessions
-					workspaceDir = effectiveDir
-				}
-			}
-		}
-	}
-
-	if job.WorkDir != "" {
-		wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(job.WorkDir)
-		if err == nil {
-			agent = wsAgent
-			sessions = wsSessions
-			workspaceDir = job.WorkDir
-		} else {
-			slog.Warn("cron: workspace agent creation failed, using global",
-				"work_dir", job.WorkDir, "session_key", sessionKey, "error", err)
-		}
-	}
+	agent, sessions, workspaceDir := e.resolveScheduledWorkContext("cron", target.platform, target.sessionKey, job.WorkDir)
 
 	useNewSession := false
 	if e.cronScheduler != nil {
@@ -1511,46 +1073,22 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		useNewSession = job.UsesNewSessionPerRun()
 	}
 
-	if useNewSession {
-		msg.SessionKey = runSessionKey
-		session := sessions.NewSideSession(runSessionKey, "cron-"+job.ID)
-		if !session.TryLock() {
-			return fmt.Errorf("session %q is busy", runSessionKey)
-		}
-		iKey := fmt.Sprintf("%s#cron:%s", runSessionKey, session.ID)
-		if workspaceDir != "" {
-			iKey = workspaceDir + ":" + iKey
-		}
-		prevHistLen := session.HistoryLen()
-		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
-		e.cleanupInteractiveState(iKey)
-		// Empty-response detection via session history delta: processInteractiveMessageWith
-		// always adds a "user" entry (prevHistLen+1), then an "assistant" entry on success
-		// (prevHistLen+2). This approach correctly detects empty responses across all
-		// delivery modes (plain text, cards, rich cards, DingTalk AI streaming) because
-		// AddHistory("assistant",...) is called before any platform-specific rendering path.
-		if !job.Mute && session.HistoryLen() < prevHistLen+2 {
-			return fmt.Errorf("cron job %q produced an empty response", job.ID)
-		}
-		return nil
-	}
-
-	session := sessions.GetOrCreateActive(sessionKey)
-	if !session.TryLock() {
-		return fmt.Errorf("session %q is busy", sessionKey)
-	}
-
-	iKey := sessionKey
-	if workspaceDir != "" {
-		iKey = workspaceDir + ":" + sessionKey
-	}
-	prevHistLen := session.HistoryLen()
-	e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
-	// Same empty-response detection as the useNewSession path above.
-	if !job.Mute && session.HistoryLen() < prevHistLen+2 {
-		return fmt.Errorf("cron job %q produced an empty response", job.ID)
-	}
-	return nil
+	return e.runScheduledAgentMessage(scheduledAgentRun{
+		kind:              "cron",
+		jobID:             job.ID,
+		platform:          target.effectivePlatform,
+		msg:               msg,
+		agent:             agent,
+		sessions:          sessions,
+		workspaceDir:      workspaceDir,
+		baseSessionKey:    target.sessionKey,
+		runSessionKey:     target.runSessionKey,
+		useNewSession:     useNewSession,
+		sideSessionPrefix: "cron-",
+		compositePrefix:   "cron",
+		mute:              job.Mute,
+		requireResponse:   true,
+	})
 }
 
 // ExecuteTimerJob fires a one-shot timer job: resolves the platform, sends a
@@ -1564,146 +1102,41 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 		Extra:      map[string]any{"job_id": job.ID, "job_description": job.Description},
 	})
 
-	sessionKey := job.SessionKey
-	platformName := ""
-	if idx := strings.Index(sessionKey, ":"); idx > 0 {
-		platformName = sessionKey[:idx]
-	}
-
-	var targetPlatform Platform
-	for _, p := range e.platforms {
-		if p.Name() == platformName {
-			targetPlatform = p
-			break
-		}
-	}
-	// Multi-workspace fallback: strip workspace prefix from session key.
-	if targetPlatform == nil {
-		for _, p := range e.platforms {
-			needle := ":" + p.Name() + ":"
-			if idx := strings.Index(sessionKey, needle); idx >= 0 {
-				targetPlatform = p
-				platformName = p.Name()
-				sessionKey = sessionKey[idx+1:]
-				break
-			}
-		}
-	}
-	if targetPlatform == nil {
-		return fmt.Errorf("platform %q not found for session %q", platformName, sessionKey)
-	}
-
-	rc, ok := targetPlatform.(ReplyContextReconstructor)
-	if !ok {
-		return fmt.Errorf("platform %q does not support proactive messaging (timer)", platformName)
-	}
-
-	runSessionKey := sessionKey
-	var replyCtx any
-	var err error
-	if !job.Mute {
-		if resolver, ok := targetPlatform.(CronReplyTargetResolver); ok {
-			resolvedSessionKey, resolvedReplyCtx, err := resolver.ResolveCronReplyTarget(sessionKey, timerRunTitle(job))
-			if err != nil {
-				if !errors.Is(err, ErrNotSupported) {
-					return fmt.Errorf("resolve timer reply target: %w", err)
-				}
-			} else {
-				if resolvedSessionKey != "" {
-					runSessionKey = resolvedSessionKey
-				}
-				if resolvedReplyCtx != nil {
-					replyCtx = resolvedReplyCtx
-				}
-			}
-		}
-	}
-	if replyCtx == nil {
-		replyCtx, err = rc.ReconstructReplyCtx(runSessionKey)
-		if err != nil {
-			return fmt.Errorf("reconstruct reply context: %w", err)
-		}
-	}
-
-	effectivePlatform := targetPlatform
-	if job.Mute {
-		effectivePlatform = &mutePlatform{targetPlatform}
+	target, err := e.resolveScheduledRunTarget(job.SessionKey, timerRunTitle(job), "timer", job.Mute)
+	if err != nil {
+		return err
 	}
 
 	// Notify user unless muted or silent
-	if !job.Mute {
-		silent := false
-		if e.timerScheduler != nil {
-			silent = e.timerScheduler.IsSilent(job)
-		}
-		if !silent {
-			desc := job.Description
-			if desc == "" {
-				if job.IsShellJob() {
-					desc = truncateStr(job.Exec, 40)
-				} else {
-					desc = truncateStr(job.Prompt, 40)
-				}
-			}
-			e.send(targetPlatform, replyCtx, fmt.Sprintf("⏰ %s", desc))
+	silent := false
+	if e.timerScheduler != nil {
+		silent = e.timerScheduler.IsSilent(job)
+	}
+	desc := job.Description
+	if desc == "" {
+		if job.IsShellJob() {
+			desc = truncateStr(job.Exec, 40)
+		} else {
+			desc = truncateStr(job.Prompt, 40)
 		}
 	}
+	e.sendScheduledStartNotice(target.platform, target.replyCtx, job.Mute, silent, desc)
 
 	if job.IsShellJob() {
-		return e.executeTimerShell(effectivePlatform, replyCtx, job)
-	}
-
-	content := job.Prompt
-	if strings.HasPrefix(content, "/") {
-		parts := strings.Fields(content)
-		if len(parts) > 0 {
-			cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
-			if skill := e.skills.Resolve(cmd); skill != nil {
-				content = BuildSkillInvocationPrompt(skill, parts[1:])
-			}
-		}
+		return e.executeTimerShell(target.effectivePlatform, target.replyCtx, job)
 	}
 
 	msg := &Message{
-		SessionKey:   sessionKey,
-		Platform:     platformName,
+		SessionKey:   target.sessionKey,
+		Platform:     target.platformName,
 		UserID:       "timer",
 		UserName:     "timer",
-		Content:      content,
-		ReplyCtx:     replyCtx,
+		Content:      e.expandScheduledPrompt(job.Prompt),
+		ReplyCtx:     target.replyCtx,
 		ModeOverride: job.Mode,
 	}
 
-	agent := e.agent
-	sessions := e.sessions
-	workspaceDir := ""
-
-	if e.multiWorkspace {
-		channelID := extractChannelID(sessionKey)
-		if channelID != "" {
-			workspace, _, err := e.resolveWorkspace(targetPlatform, channelID)
-			if err == nil && workspace != "" {
-				wsAgent, wsSessions, _, effectiveDir, err := e.workspaceContext(workspace, sessionKey)
-				if err == nil {
-					agent = wsAgent
-					sessions = wsSessions
-					workspaceDir = effectiveDir
-				}
-			}
-		}
-	}
-
-	if job.WorkDir != "" {
-		wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(job.WorkDir)
-		if err == nil {
-			agent = wsAgent
-			sessions = wsSessions
-			workspaceDir = job.WorkDir
-		} else {
-			slog.Warn("timer: workspace agent creation failed, using global",
-				"work_dir", job.WorkDir, "session_key", sessionKey, "error", err)
-		}
-	}
+	agent, sessions, workspaceDir := e.resolveScheduledWorkContext("timer", target.platform, target.sessionKey, job.WorkDir)
 
 	useNewSession := false
 	if e.timerScheduler != nil {
@@ -1712,32 +1145,21 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 		useNewSession = job.UsesNewSessionPerRun()
 	}
 
-	if useNewSession {
-		msg.SessionKey = runSessionKey
-		session := sessions.NewSideSession(runSessionKey, "timer-"+job.ID)
-		if !session.TryLock() {
-			return fmt.Errorf("session %q is busy", runSessionKey)
-		}
-		iKey := fmt.Sprintf("%s#timer:%s", runSessionKey, session.ID)
-		if workspaceDir != "" {
-			iKey = workspaceDir + ":" + iKey
-		}
-		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
-		e.cleanupInteractiveState(iKey)
-		return nil
-	}
-
-	session := sessions.GetOrCreateActive(sessionKey)
-	if !session.TryLock() {
-		return fmt.Errorf("session %q is busy", sessionKey)
-	}
-
-	iKey := sessionKey
-	if workspaceDir != "" {
-		iKey = workspaceDir + ":" + sessionKey
-	}
-	e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
-	return nil
+	return e.runScheduledAgentMessage(scheduledAgentRun{
+		kind:              "timer",
+		jobID:             job.ID,
+		platform:          target.effectivePlatform,
+		msg:               msg,
+		agent:             agent,
+		sessions:          sessions,
+		workspaceDir:      workspaceDir,
+		baseSessionKey:    target.sessionKey,
+		runSessionKey:     target.runSessionKey,
+		useNewSession:     useNewSession,
+		sideSessionPrefix: "timer-",
+		compositePrefix:   "timer",
+		mute:              job.Mute,
+	})
 }
 
 func timerRunTitle(job *TimerJob) string {
@@ -2149,7 +1571,7 @@ func (e *Engine) ExecuteHeartbeat(sessionKey, prompt string, silent bool) error 
 		}
 	}
 	// Fallback: in multi-workspace mode the stored session key may be prefixed
-	// with the workspace path (e.g. "/home/user/project:slack:C123:U456").
+	// with the workspace path.
 	// Search for a known platform name within the key and strip the prefix.
 	if targetPlatform == nil {
 		for _, p := range e.platforms {
@@ -2353,10 +1775,7 @@ func (e *Engine) markPlatformUnavailable(p Platform) bool {
 
 func (e *Engine) initPlatformCapabilities(p Platform) {
 	if registrar, ok := p.(CommandRegistrar); ok {
-		commands, skillsOmitted := e.menuCommandsForPlatform(p.Name())
-		if skillsOmitted && strings.EqualFold(p.Name(), "telegram") {
-			slog.Info("telegram: omitting skill commands from menu due to command limit", "project", e.name)
-		}
+		commands, _ := e.menuCommandsForPlatform(p.Name())
 		if err := registrar.RegisterCommands(commands); err != nil {
 			slog.Error("platform command registration failed", "project", e.name, "platform", p.Name(), "error", err)
 		} else {
@@ -2383,31 +1802,6 @@ func (e *Engine) matchBannedWord(content string) string {
 		}
 	}
 	return ""
-}
-
-// resolveAlias checks if the content (or its first word) matches an alias and replaces it.
-func (e *Engine) resolveAlias(content string) string {
-	e.aliasMu.RLock()
-	defer e.aliasMu.RUnlock()
-
-	if len(e.aliases) == 0 {
-		return content
-	}
-
-	// Exact match on full content
-	if cmd, ok := e.aliases[content]; ok {
-		return cmd
-	}
-
-	// Match first word, append remaining args
-	parts := strings.SplitN(content, " ", 2)
-	if cmd, ok := e.aliases[parts[0]]; ok {
-		if len(parts) > 1 {
-			return cmd + " " + parts[1]
-		}
-		return cmd
-	}
-	return content
 }
 
 func (e *Engine) handleMessageRecall(p Platform, msg *Message) {
@@ -3650,7 +3044,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		drainEvents(state.agentSession.Events())
 	}
 
-	promptContent := e.buildSenderPrompt(msg.Content, msg.UserID, msg.UserName, msg.Platform, msg.SessionKey, msg.ChannelKey)
+	promptContent := e.buildSenderPrompt(msg.Content, msg.UserID, msg.UserName, msg.Platform, msg.SessionKey, msg.ChannelKey, platformSelfID(p), platformSelfName(p))
 
 	sendStart := time.Now()
 	state.mu.Lock()
@@ -3778,10 +3172,14 @@ func (e *Engine) getOrCreateWorkspaceAgent(workspace string) (Agent, *SessionMan
 		}
 	}
 
-	// Create per-workspace session manager
+	// Create per-workspace session manager. If the root session manager is
+	// in-memory, workspace sessions must remain in-memory too.
 	h := sha256.Sum256([]byte(workspace))
-	sessionFile := filepath.Join(filepath.Dir(e.sessions.StorePath()),
-		fmt.Sprintf("%s_ws_%s.json", e.name, hex.EncodeToString(h[:4])))
+	sessionFile := ""
+	if storePath := e.sessions.StorePath(); storePath != "" {
+		sessionFile = filepath.Join(filepath.Dir(storePath),
+			fmt.Sprintf("%s_ws_%s.json", e.name, hex.EncodeToString(h[:4])))
+	}
 	sessions := NewSessionManager(sessionFile)
 
 	ws.agent = agent
@@ -5592,7 +4990,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					}
 				}
 
-				queuedPrompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
+				queuedPrompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey, platformSelfID(queued.platform), platformSelfName(queued.platform))
 
 				nextSend := make(chan error, 1)
 				go func() {
@@ -5903,7 +5301,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		state.mu.Unlock()
 
 		e.i18n.DetectAndSet(queued.content)
-		prompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
+		prompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey, platformSelfID(queued.platform), platformSelfName(queued.platform))
 
 		if state.agentSession == nil || !state.agentSession.Alive() {
 			e.send(queued.platform, queued.replyCtx, fmt.Sprintf(e.i18n.T(MsgError), "agent session ended"))
@@ -5934,57 +5332,6 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 // Command handling
 // ──────────────────────────────────────────────────────────────
 
-// builtinCommands maps canonical command names to their aliases/full names.
-// The first entry is the canonical name used for prefix matching.
-var builtinCommands = []struct {
-	names []string
-	id    string
-}{
-	{[]string{"new"}, "new"},
-	{[]string{"list", "sessions"}, "list"},
-	{[]string{"switch"}, "switch"},
-	{[]string{"name", "rename"}, "name"},
-	{[]string{"current"}, "current"},
-	{[]string{"status"}, "status"},
-	{[]string{"usage", "quota"}, "usage"},
-	{[]string{"history"}, "history"},
-	{[]string{"allow"}, "allow"},
-	{[]string{"model"}, "model"},
-	{[]string{"reasoning", "effort"}, "reasoning"},
-	{[]string{"mode"}, "mode"},
-	{[]string{"lang"}, "lang"},
-	{[]string{"quiet"}, "quiet"},
-	{[]string{"provider"}, "provider"},
-	{[]string{"memory"}, "memory"},
-	{[]string{"cron"}, "cron"},
-	{[]string{"timer", "at", "remind"}, "timer"},
-	{[]string{"heartbeat", "hb"}, "heartbeat"},
-	{[]string{"compress", "compact"}, "compress"},
-	{[]string{"stop"}, "stop"},
-	{[]string{"cancel"}, "cancel"},
-	{[]string{"help"}, "help"},
-	{[]string{"version"}, "version"},
-	{[]string{"commands", "command", "cmd"}, "commands"},
-	{[]string{"skills", "skill"}, "skills"},
-	{[]string{"config"}, "config"},
-	{[]string{"doctor"}, "doctor"},
-	{[]string{"upgrade", "update"}, "upgrade"},
-	{[]string{"restart"}, "restart"},
-	{[]string{"alias"}, "alias"},
-	{[]string{"delete", "del", "rm"}, "delete"},
-	{[]string{"bind"}, "bind"},
-	{[]string{"search", "find"}, "search"},
-	{[]string{"shell", "sh", "exec", "run"}, "shell"},
-	{[]string{"show"}, "show"},
-	{[]string{"dir", "cd", "chdir", "workdir"}, "dir"},
-	{[]string{"tts"}, "tts"},
-	{[]string{"workspace", "ws"}, "workspace"},
-	{[]string{"whoami", "myid"}, "whoami"},
-	{[]string{"web"}, "web"},
-	{[]string{"diff"}, "diff"},
-	{[]string{"ps", "btw"}, "ps"},
-}
-
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 	text := strings.TrimSpace(strings.Join(args, " "))
 	if text == "" {
@@ -6014,258 +5361,6 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 		return
 	}
 	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsSent))
-}
-
-// matchPrefix finds a unique command matching the given prefix.
-// Returns the command id or "" if no match / ambiguous.
-func matchPrefix(prefix string, candidates []struct {
-	names []string
-	id    string
-}) string {
-	// Exact match first
-	for _, c := range candidates {
-		for _, n := range c.names {
-			if prefix == n {
-				return c.id
-			}
-		}
-	}
-	// Prefix match
-	var matched string
-	for _, c := range candidates {
-		for _, n := range c.names {
-			if strings.HasPrefix(n, prefix) {
-				if matched != "" && matched != c.id {
-					return "" // ambiguous
-				}
-				matched = c.id
-				break
-			}
-		}
-	}
-	return matched
-}
-
-// matchSubCommand does prefix matching against a flat list of subcommand names.
-func matchSubCommand(input string, candidates []string) string {
-	for _, c := range candidates {
-		if input == c {
-			return c
-		}
-	}
-	var matched string
-	for _, c := range candidates {
-		if strings.HasPrefix(c, input) {
-			if matched != "" {
-				return input // ambiguous → return raw input (will hit default)
-			}
-			matched = c
-		}
-	}
-	if matched != "" {
-		return matched
-	}
-	return input
-}
-
-// splitCommandArgs splits a command string into tokens, respecting single- and
-// double-quoted groups so paths like "/workspace bind '/my path/foo'" work
-// correctly (#1211). Quotes are stripped from the resulting tokens.
-func splitCommandArgs(s string) []string {
-	var tokens []string
-	var cur strings.Builder
-	inSingle := false
-	inDouble := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == '\'' && !inDouble:
-			inSingle = !inSingle
-		case c == '"' && !inSingle:
-			inDouble = !inDouble
-		case (c == ' ' || c == '\t') && !inSingle && !inDouble:
-			if cur.Len() > 0 {
-				tokens = append(tokens, cur.String())
-				cur.Reset()
-			}
-		default:
-			cur.WriteByte(c)
-		}
-	}
-	if cur.Len() > 0 {
-		tokens = append(tokens, cur.String())
-	}
-	return tokens
-}
-
-func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
-	parts := splitCommandArgs(raw)
-	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
-	args := parts[1:]
-
-	cmdID := matchPrefix(cmd, builtinCommands)
-
-	// Resolve effective disabled commands: role-based if available, else project-level
-	e.userRolesMu.RLock()
-	disabledCmds := e.disabledCmds
-	urm := e.userRoles
-	e.userRolesMu.RUnlock()
-	if urm != nil {
-		if role := urm.ResolveRole(msg.UserID); role != nil {
-			disabledCmds = role.DisabledCmds
-		}
-	}
-
-	if cmdID != "" && disabledCmds[cmdID] {
-		slog.Info("audit: command_blocked",
-			"user_id", msg.UserID, "platform", msg.Platform,
-			"project", e.name, "command", cmdID, "reason", "disabled")
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandDisabled), "/"+cmdID))
-		return true
-	}
-
-	if cmdID != "" && privilegedCommands[cmdID] && !e.isAdmin(msg.UserID) {
-		slog.Info("audit: command_blocked",
-			"user_id", msg.UserID, "platform", msg.Platform,
-			"project", e.name, "command", cmdID, "reason", "unauthorized")
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/"+cmdID))
-		return true
-	}
-
-	if cmdID != "" {
-		slog.Info("audit: command_executed",
-			"user_id", msg.UserID, "platform", msg.Platform,
-			"project", e.name, "command", cmdID)
-	}
-
-	switch cmdID {
-	case "new":
-		e.cmdNew(p, msg, args)
-	case "list":
-		e.cmdList(p, msg, args)
-	case "switch":
-		e.cmdSwitch(p, msg, args)
-	case "name":
-		e.cmdName(p, msg, args)
-	case "current":
-		e.cmdCurrent(p, msg)
-	case "status":
-		e.cmdStatus(p, msg)
-	case "usage":
-		e.cmdUsage(p, msg)
-	case "history":
-		e.cmdHistory(p, msg, args)
-	case "allow":
-		e.cmdAllow(p, msg, args)
-	case "model":
-		e.cmdModel(p, msg, args)
-	case "reasoning":
-		e.cmdReasoning(p, msg, args)
-	case "mode":
-		e.cmdMode(p, msg, args)
-	case "lang":
-		e.cmdLang(p, msg, args)
-	case "quiet":
-		e.cmdQuiet(p, msg, args)
-	case "provider":
-		e.cmdProvider(p, msg, args)
-	case "memory":
-		e.cmdMemory(p, msg, args)
-	case "cron":
-		e.cmdCron(p, msg, args)
-	case "timer":
-		e.cmdTimer(p, msg, args)
-	case "heartbeat":
-		e.cmdHeartbeat(p, msg, args)
-	case "compress":
-		e.cmdCompress(p, msg)
-	case "stop":
-		e.cmdStop(p, msg)
-	case "cancel":
-		e.cmdCancel(p, msg)
-	case "help":
-		e.cmdHelp(p, msg)
-	case "start":
-		e.cmdStart(p, msg)
-	case "version":
-		e.reply(p, msg.ReplyCtx, VersionInfo)
-	case "commands":
-		e.cmdCommands(p, msg, args)
-	case "skills":
-		e.cmdSkills(p, msg)
-	case "config":
-		e.cmdConfig(p, msg, args)
-	case "doctor":
-		e.cmdDoctor(p, msg)
-	case "upgrade":
-		e.cmdUpgrade(p, msg, args)
-	case "restart":
-		e.cmdRestart(p, msg)
-	case "alias":
-		e.cmdAlias(p, msg, args)
-	case "delete":
-		e.cmdDelete(p, msg, args)
-	case "bind":
-		e.cmdBind(p, msg, args)
-	case "search":
-		e.cmdSearch(p, msg, args)
-	case "shell":
-		e.cmdShell(p, msg, raw)
-	case "diff":
-		e.cmdDiff(p, msg, raw)
-	case "show":
-		e.cmdShow(p, msg, args)
-	case "dir":
-		e.cmdDir(p, msg, args)
-	case "tts":
-		e.cmdTTS(p, msg, args)
-	case "workspace":
-		if !e.multiWorkspace {
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgWsNotEnabled))
-			return true
-		}
-		e.handleWorkspaceCommand(p, msg, args)
-		return true
-	case "whoami":
-		e.cmdWhoami(p, msg)
-	case "web":
-		e.cmdWeb(p, msg, args)
-	case "ps":
-		e.cmdPs(p, msg, args)
-	default:
-		if custom, ok := e.commands.Resolve(cmd); ok {
-			if disabledCmds[strings.ToLower(custom.Name)] {
-				slog.Info("audit: command_blocked",
-					"user_id", msg.UserID, "platform", msg.Platform,
-					"project", e.name, "command", custom.Name, "reason", "disabled")
-				e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandDisabled), "/"+custom.Name))
-				return true
-			}
-			slog.Info("audit: command_executed",
-				"user_id", msg.UserID, "platform", msg.Platform,
-				"project", e.name, "command", custom.Name, "type", "custom")
-			e.executeCustomCommand(p, msg, custom, args)
-			return true
-		}
-		if skill := e.skills.Resolve(cmd); skill != nil {
-			if disabledCmds[strings.ToLower(skill.Name)] {
-				slog.Info("audit: command_blocked",
-					"user_id", msg.UserID, "platform", msg.Platform,
-					"project", e.name, "command", skill.Name, "reason", "disabled")
-				e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandDisabled), "/"+skill.Name))
-				return true
-			}
-			slog.Info("audit: command_executed",
-				"user_id", msg.UserID, "platform", msg.Platform,
-				"project", e.name, "command", skill.Name, "type", "skill")
-			e.executeSkill(p, msg, skill, args)
-			return true
-		}
-		// Not a cc-connect command — notify user, then fall through to agent
-		e.send(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgUnknownCommand), "/"+cmd))
-		return false
-	}
-	return true
 }
 
 func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string) {
@@ -8881,18 +7976,8 @@ func (e *Engine) cmdHelp(p Platform, msg *Message) {
 	e.replyWithCard(p, msg.ReplyCtx, e.renderHelpCard())
 }
 
-// cmdStart handles the `/start` slash command.
-//
-// On Telegram, `/start` is a protocol convention sent by the client when a
-// user first opens a bot (or taps the Start button). Without a native
-// handler, the message previously fell through to the default branch and
-// got forwarded verbatim to the agent — and Claude Code's CLI interprets a
-// leading "/" as a slash-command request, replying "Unknown command:
-// /start. Did you mean /stats?" instead of greeting the user.
-//
-// Replying with a localized welcome that names the project keeps the
-// behavior consistent with every other Telegram bot framework, and is a
-// no-op improvement on platforms where /start has no special meaning.
+// cmdStart handles the `/start` slash command, replying with a localized
+// welcome message that names the project.
 func (e *Engine) cmdStart(p Platform, msg *Message) {
 	name := e.name
 	if name == "" {
@@ -9125,67 +8210,7 @@ func (e *Engine) GetAllCommands() []BotCommandInfo {
 }
 
 func (e *Engine) menuCommandsForPlatform(platformName string) ([]BotCommandInfo, bool) {
-	commands := e.GetAllCommands()
-	if !strings.EqualFold(platformName, "telegram") {
-		return commands, false
-	}
-	return telegramMenuCommandsAllOrNone(commands)
-}
-
-func telegramMenuCommandsAllOrNone(commands []BotCommandInfo) ([]BotCommandInfo, bool) {
-	var nonSkill []BotCommandInfo
-	var skill []BotCommandInfo
-	for _, command := range commands {
-		if command.IsSkill {
-			skill = append(skill, command)
-			continue
-		}
-		nonSkill = append(nonSkill, command)
-	}
-
-	if len(telegramMenuEntryNames(append(append([]BotCommandInfo{}, nonSkill...), skill...))) <= telegramBotCommandLimit {
-		return commands, false
-	}
-	return nonSkill, len(skill) > 0
-}
-
-func telegramMenuEntryNames(commands []BotCommandInfo) []string {
-	var names []string
-	seen := make(map[string]bool)
-	for _, command := range commands {
-		name := sanitizeTelegramMenuCommand(command.Command)
-		if name == "" || seen[name] {
-			continue
-		}
-		seen[name] = true
-		names = append(names, name)
-	}
-	return names
-}
-
-func sanitizeTelegramMenuCommand(cmd string) string {
-	cmd = strings.ToLower(cmd)
-	var b strings.Builder
-	for _, c := range cmd {
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-			b.WriteRune(c)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	result := b.String()
-	for strings.Contains(result, "__") {
-		result = strings.ReplaceAll(result, "__", "_")
-	}
-	result = strings.Trim(result, "_")
-	if len(result) == 0 || result[0] < 'a' || result[0] > 'z' {
-		return ""
-	}
-	if len(result) > 32 {
-		result = result[:32]
-	}
-	return result
+	return e.GetAllCommands(), false
 }
 
 func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
@@ -11142,7 +10167,7 @@ func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName
 		Extra:    map[string]any{"tool_name": toolName},
 	})
 
-	// Try inline buttons first (Telegram)
+	// Try inline buttons first
 	if bs, ok := p.(InlineButtonSender); ok {
 		buttons := [][]ButtonOption{
 			{
@@ -11246,7 +10271,7 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 		return
 	}
 
-	// Try inline buttons (Telegram)
+	// Try inline buttons.
 	if bs, ok := p.(InlineButtonSender); ok {
 		var textBuf strings.Builder
 		textBuf.WriteString("❓ *")
@@ -11309,128 +10334,6 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 	e.send(p, replyCtx, sb.String())
 }
 
-// waitOutgoing blocks on the per-platform outgoing rate limiter when enabled.
-func (e *Engine) waitOutgoing(p Platform) error {
-	if e.outgoingRL == nil {
-		return nil
-	}
-	return e.outgoingRL.Wait(e.ctx, p.Name())
-}
-
-func (e *Engine) renderOutgoingContentForWorkspace(p Platform, content, workspaceDir string) string {
-	if strings.TrimSpace(content) == "" {
-		return content
-	}
-	return TransformLocalReferences(content, e.references, e.agent.Name(), p.Name(), workspaceDir)
-}
-
-func (e *Engine) sendWithErrorForWorkspace(p Platform, replyCtx any, content, workspaceDir string) error {
-	if err := e.waitOutgoing(p); err != nil {
-		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
-		return err
-	}
-	content = e.renderOutgoingContentForWorkspace(p, content, workspaceDir)
-	return e.sendAlreadyRenderedWithError(p, replyCtx, content)
-}
-
-func (e *Engine) sendForWorkspace(p Platform, replyCtx any, content, workspaceDir string) {
-	_ = e.sendWithErrorForWorkspace(p, replyCtx, content, workspaceDir)
-}
-
-func (e *Engine) renderCardForPlatform(p Platform, card *Card) *Card {
-	return e.renderCardForPlatformWorkspace(p, card, "")
-}
-
-func (e *Engine) renderCardForPlatformWorkspace(p Platform, card *Card, workspaceDir string) *Card {
-	if card == nil {
-		return nil
-	}
-	out := &Card{}
-	if card.Header != nil {
-		h := *card.Header
-		out.Header = &h
-	}
-	out.Elements = make([]CardElement, 0, len(card.Elements))
-	for _, elem := range card.Elements {
-		switch v := elem.(type) {
-		case CardMarkdown:
-			content := v.Content
-			if workspaceDir != "" {
-				content = e.renderOutgoingContentForWorkspace(p, v.Content, workspaceDir)
-			}
-			out.Elements = append(out.Elements, CardMarkdown{Content: content})
-		case CardNote:
-			text := v.Text
-			if workspaceDir != "" {
-				text = e.renderOutgoingContentForWorkspace(p, v.Text, workspaceDir)
-			}
-			out.Elements = append(out.Elements, CardNote{Text: text, Tag: v.Tag})
-		case CardListItem:
-			text := v.Text
-			if workspaceDir != "" {
-				text = e.renderOutgoingContentForWorkspace(p, v.Text, workspaceDir)
-			}
-			out.Elements = append(out.Elements, CardListItem{
-				Text:     text,
-				BtnText:  v.BtnText,
-				BtnType:  v.BtnType,
-				BtnValue: v.BtnValue,
-				Extra:    v.Extra,
-			})
-		default:
-			out.Elements = append(out.Elements, elem)
-		}
-	}
-	return out
-}
-
-// sendWithError applies outgoing rate limiting and p.Send. It logs wait
-// cancellation and platform failures, and returns a non-nil error on either.
-func (e *Engine) sendWithError(p Platform, replyCtx any, content string) error {
-	if err := e.waitOutgoing(p); err != nil {
-		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
-		return err
-	}
-	return e.sendAlreadyRenderedWithError(p, replyCtx, content)
-}
-
-func (e *Engine) sendAlreadyRenderedWithError(p Platform, replyCtx any, content string) error {
-	start := time.Now()
-	if err := p.Send(e.ctx, replyCtx, content); err != nil {
-		// Check for context_token missing error (common for Weixin platform)
-		if strings.Contains(err.Error(), "missing context_token") {
-			slog.Error("platform send failed: context_token missing",
-				"platform", p.Name(),
-				"error", err,
-				"content_len", len(content),
-				"hint", "user needs to send a new message to refresh context_token")
-		} else {
-			slog.Error("platform send failed", "platform", p.Name(), "error", err, "content_len", len(content))
-		}
-		return err
-	}
-	if elapsed := time.Since(start); elapsed >= slowPlatformSend {
-		slog.Warn("slow platform send", "platform", p.Name(), "elapsed", elapsed, "content_len", len(content))
-	}
-	return nil
-}
-
-// send wraps p.Send with error logging, slow-operation warnings, and outgoing rate limiting.
-func (e *Engine) send(p Platform, replyCtx any, content string) {
-	_ = e.sendWithError(p, replyCtx, content)
-}
-
-// sendRaw sends content without local-reference rendering. This is used for raw
-// tool outputs, where preserving the original text is preferable to applying the
-// agent-facing reference display transform.
-func (e *Engine) sendRaw(p Platform, replyCtx any, content string) {
-	if err := e.waitOutgoing(p); err != nil {
-		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
-		return
-	}
-	_ = e.sendAlreadyRenderedWithError(p, replyCtx, content)
-}
-
 // drainEvents discards any buffered events from the channel.
 // Called before a new turn to prevent stale events from a previous turn's
 // agent process from being mistaken for the new turn's response.
@@ -11451,89 +10354,6 @@ func drainEvents(ch <-chan Event) {
 			return
 		}
 	}
-}
-
-// replyWithError applies outgoing rate limiting and p.Reply.
-func (e *Engine) replyWithError(p Platform, replyCtx any, content string) error {
-	if err := e.waitOutgoing(p); err != nil {
-		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
-		return err
-	}
-	start := time.Now()
-	if err := p.Reply(e.ctx, replyCtx, content); err != nil {
-		slog.Error("platform reply failed", "platform", p.Name(), "error", err, "content_len", len(content))
-		return err
-	}
-	if elapsed := time.Since(start); elapsed >= slowPlatformSend {
-		slog.Warn("slow platform reply", "platform", p.Name(), "elapsed", elapsed, "content_len", len(content))
-	}
-	return nil
-}
-
-// reply wraps p.Reply with error logging, slow-operation warnings, and outgoing rate limiting.
-func (e *Engine) reply(p Platform, replyCtx any, content string) {
-	_ = e.replyWithError(p, replyCtx, content)
-}
-
-// replyWithButtons sends a reply with inline buttons if the platform supports it,
-// otherwise falls back to plain text reply.
-func (e *Engine) replyWithButtons(p Platform, replyCtx any, content string, buttons [][]ButtonOption) {
-	if err := e.waitOutgoing(p); err != nil {
-		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
-		return
-	}
-	if bs, ok := p.(InlineButtonSender); ok {
-		if err := bs.SendWithButtons(e.ctx, replyCtx, content, buttons); err == nil {
-			return
-		}
-	}
-	e.reply(p, replyCtx, content)
-}
-
-func supportsCards(p Platform) bool {
-	_, ok := p.(CardSender)
-	return ok
-}
-
-// replyWithCard sends a structured card via CardSender.
-// For platforms without card support, renders as plain text (no intermediate fallback).
-func (e *Engine) replyWithCard(p Platform, replyCtx any, card *Card) {
-	if card == nil {
-		slog.Error("replyWithCard: nil card", "platform", p.Name())
-		return
-	}
-	if err := e.waitOutgoing(p); err != nil {
-		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
-		return
-	}
-	if cs, ok := p.(CardSender); ok {
-		rendered := e.renderCardForPlatform(p, card)
-		if err := cs.ReplyCard(e.ctx, replyCtx, rendered); err != nil {
-			slog.Error("card reply failed", "platform", p.Name(), "error", err)
-		}
-		return
-	}
-	e.reply(p, replyCtx, e.renderCardForPlatform(p, card).RenderText())
-}
-
-// sendWithCard sends a card as a new message (not a reply).
-func (e *Engine) sendWithCard(p Platform, replyCtx any, card *Card) {
-	if card == nil {
-		slog.Error("sendWithCard: nil card", "platform", p.Name())
-		return
-	}
-	if err := e.waitOutgoing(p); err != nil {
-		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
-		return
-	}
-	if cs, ok := p.(CardSender); ok {
-		rendered := e.renderCardForPlatform(p, card)
-		if err := cs.SendCard(e.ctx, replyCtx, rendered); err != nil {
-			slog.Error("card send failed", "platform", p.Name(), "error", err)
-		}
-		return
-	}
-	e.send(p, replyCtx, e.renderCardForPlatform(p, card).RenderText())
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -14430,53 +13250,15 @@ func (e *Engine) cmdSkills(p Platform, msg *Message) {
 		sb.WriteString(e.i18n.Tf(MsgSkillsTitle, e.agent.Name(), len(skills)))
 
 		for _, s := range skills {
-			sb.WriteString(fmt.Sprintf("  /%s — %s\n", displayCommandForPlatform(p.Name(), s.Name), s.Description))
+			sb.WriteString(fmt.Sprintf("  /%s — %s\n", s.Name, s.Description))
 		}
 
 		sb.WriteString("\n" + e.i18n.T(MsgSkillsHint))
-		if _, skillsOmitted := e.menuCommandsForPlatform(p.Name()); skillsOmitted && strings.EqualFold(p.Name(), "telegram") {
-			sb.WriteString("\n" + e.i18n.T(MsgSkillsTelegramMenuHint))
-		}
 		e.reply(p, msg.ReplyCtx, sb.String())
 		return
 	}
 
 	e.replyWithCard(p, msg.ReplyCtx, e.renderSkillsCard())
-}
-
-func displayCommandForPlatform(platformName, command string) string {
-	if !strings.EqualFold(platformName, "telegram") {
-		return command
-	}
-	if sanitized := sanitizeTelegramDisplayCommand(command); sanitized != "" {
-		return sanitized
-	}
-	return command
-}
-
-func sanitizeTelegramDisplayCommand(cmd string) string {
-	cmd = strings.ToLower(cmd)
-	var b strings.Builder
-	for _, c := range cmd {
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-			b.WriteRune(c)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	result := b.String()
-	for strings.Contains(result, "__") {
-		result = strings.ReplaceAll(result, "__", "_")
-	}
-	result = strings.Trim(result, "_")
-	if len(result) == 0 || result[0] < 'a' || result[0] > 'z' {
-		return ""
-	}
-	if len(result) > 32 {
-		result = result[:32]
-	}
-	return result
 }
 
 // ── /config command ──────────────────────────────────────────
@@ -15770,7 +14552,7 @@ func (e *Engine) cmdBindSetup(p Platform, msg *Message) {
 // injectSender is enabled and userID is non-empty. When userName is available
 // it is included as sender_name so the agent can identify who sent the message
 // by display name (useful in shared channel sessions with multiple users).
-func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionKey, channelKey string) string {
+func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionKey, channelKey, selfID, selfName string) string {
 	if !e.injectSender || userID == "" {
 		return content
 	}
@@ -15778,11 +14560,38 @@ func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionK
 	if chatID == "" {
 		chatID = extractChannelID(sessionKey)
 	}
-	if userName != "" {
-		safeName := strings.NewReplacer(`"`, `'`, "\n", " ", "\r", "").Replace(userName)
-		return fmt.Sprintf("[cc-connect sender_id=%s sender_name=\"%s\" platform=%s chat_id=%s]\n%s", userID, safeName, platform, chatID, content)
+	selfIDField := ""
+	if selfID != "" {
+		selfIDField = " self_id=" + selfID
 	}
-	return fmt.Sprintf("[cc-connect sender_id=%s platform=%s chat_id=%s]\n%s", userID, platform, chatID, content)
+	selfNameField := ""
+	if selfName != "" {
+		safeSelfName := sanitizePromptHeaderValue(selfName)
+		selfNameField = fmt.Sprintf(" self_name=\"%s\"", safeSelfName)
+	}
+	if userName != "" {
+		safeName := sanitizePromptHeaderValue(userName)
+		return fmt.Sprintf("[cc-connect sender_id=%s sender_name=\"%s\" platform=%s chat_id=%s%s%s]\n%s", userID, safeName, platform, chatID, selfIDField, selfNameField, content)
+	}
+	return fmt.Sprintf("[cc-connect sender_id=%s platform=%s chat_id=%s%s%s]\n%s", userID, platform, chatID, selfIDField, selfNameField, content)
+}
+
+func platformSelfID(p Platform) string {
+	if sp, ok := p.(SelfIDProvider); ok {
+		return sp.SelfID()
+	}
+	return ""
+}
+
+func platformSelfName(p Platform) string {
+	if sp, ok := p.(SelfNameProvider); ok {
+		return sp.SelfName()
+	}
+	return ""
+}
+
+func sanitizePromptHeaderValue(v string) string {
+	return strings.NewReplacer(`"`, `'`, "\n", " ", "\r", "").Replace(v)
 }
 
 func extractChannelID(sessionKey string) string {
@@ -15805,7 +14614,7 @@ func extractUserID(sessionKey string) string {
 	// Format: "platform:channelID:userID" or "platform:type:channelID:userID"
 	// When parts[1] is a single-char type tag, the user ID is in parts[3]
 	// (4-segment form). The 3-segment form with a type tag (shared session,
-	// e.g. "dingtalk:g:cid") has no per-user ID, so return "".
+	// If the session key has no per-user ID, return "".
 	parts := strings.SplitN(sessionKey, ":", 5)
 	if len(parts) >= 3 && len(parts[1]) == 1 {
 		if len(parts) >= 4 {
@@ -15918,13 +14727,12 @@ func (e *Engine) sessionContextForKey(sessionKey string) (Agent, *SessionManager
 			}
 		}
 	}
-	// Live-state fallback: when channel-derived binding misses (Discord
-	// thread_isolation case where binding is keyed by parent channel but
-	// sessionKey is the thread ID), recover the workspace from any live
-	// interactive state keyed as "<workspace>:<sessionKey>". Without this,
-	// callers would route to the global agent while interactiveKeyForSessionKey
-	// returns the workspace-prefixed key, allowing concurrent unlocked sends
-	// to the same agent session.
+	// Live-state fallback: when channel-derived binding misses for a
+	// thread-isolated session, recover the workspace from any live interactive
+	// state keyed as "<workspace>:<sessionKey>". Without this, callers would
+	// route to the global agent while interactiveKeyForSessionKey returns the
+	// workspace-prefixed key, allowing concurrent unlocked sends to the same
+	// agent session.
 	if workspace := e.workspaceFromLiveState(sessionKey); workspace != "" {
 		if wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(workspace); err == nil {
 			return wsAgent, wsSessions
@@ -16034,7 +14842,7 @@ func (e *Engine) interactiveKeyForSessionKey(sessionKey string) string {
 //     any stale workspace state becomes unreachable through this lookup,
 //     which is exactly what we want.
 //  3. Live-state suffix scan — only fires when channel-binding lookup
-//     fails. This is the recovery path for Discord thread_isolation: the
+//     fails. This is the recovery path for thread-isolated session: the
 //     binding is keyed by the parent channel, but sessionKey is the thread
 //     ID, so step 2 misses. The state map was keyed correctly at processing
 //     time, so we recover the workspace prefix from there.
