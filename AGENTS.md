@@ -25,6 +25,14 @@ core            -> standard library and shared dependencies only
 6. User-facing strings must go through `core/i18n.go`.
 7. Tests must pass before committing: `go test ./...`.
 
+## Branch Workflow
+
+1. Keep local `develop` synchronized with `origin/develop` before starting work.
+2. Treat `develop` as the long-lived development integration branch.
+3. Do not implement new requirements directly on `develop`; create a worktree branch from `develop` for each requirement.
+4. After a worktree branch is complete, merge it back into `develop` and push `develop` to origin.
+5. Do not implement requirements on `dev` or modify `dev` directly.
+
 ## Key Interfaces
 
 - `Platform`: Feishu/Lark adapter boundary used by the engine.
