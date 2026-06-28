@@ -72,6 +72,8 @@ web/tsconfig.tsbuildinfo
 # Testing & temporary files
 # ============================================================================
 test/
+!web/src/test/
+!web/src/test/**
 scripts/
 tmp/
 temp/

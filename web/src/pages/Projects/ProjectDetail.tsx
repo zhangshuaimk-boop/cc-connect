@@ -129,7 +129,7 @@ export default function ProjectDetail() {
         setShowCtxIndicator(proj.value.show_context_indicator !== false);
         setShowWorkdirIndicator(proj.value.show_workdir_indicator !== false);
         setReplyFooter(proj.value.reply_footer !== false);
-        setInjectSender(proj.value.inject_sender === true);
+        setInjectSender(proj.value.inject_sender !== false);
         setProviderRefs(proj.value.provider_refs || []);
         const afMap: Record<string, string> = {};
         proj.value.platform_configs?.forEach(pc => {
