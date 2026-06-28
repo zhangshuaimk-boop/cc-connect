@@ -3044,7 +3044,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		drainEvents(state.agentSession.Events())
 	}
 
-	promptContent := e.buildSenderPrompt(msg.Content, msg.UserID, msg.UserName, msg.Platform, msg.SessionKey, msg.ChannelKey, platformSelfID(p))
+	promptContent := e.buildSenderPrompt(msg.Content, msg.UserID, msg.UserName, msg.Platform, msg.SessionKey, msg.ChannelKey, platformSelfID(p), platformSelfName(p))
 
 	sendStart := time.Now()
 	state.mu.Lock()
@@ -4990,7 +4990,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					}
 				}
 
-				queuedPrompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey, platformSelfID(queued.platform))
+				queuedPrompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey, platformSelfID(queued.platform), platformSelfName(queued.platform))
 
 				nextSend := make(chan error, 1)
 				go func() {
@@ -5301,7 +5301,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		state.mu.Unlock()
 
 		e.i18n.DetectAndSet(queued.content)
-		prompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey, platformSelfID(queued.platform))
+		prompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey, platformSelfID(queued.platform), platformSelfName(queued.platform))
 
 		if state.agentSession == nil || !state.agentSession.Alive() {
 			e.send(queued.platform, queued.replyCtx, fmt.Sprintf(e.i18n.T(MsgError), "agent session ended"))
@@ -14552,7 +14552,7 @@ func (e *Engine) cmdBindSetup(p Platform, msg *Message) {
 // injectSender is enabled and userID is non-empty. When userName is available
 // it is included as sender_name so the agent can identify who sent the message
 // by display name (useful in shared channel sessions with multiple users).
-func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionKey, channelKey, selfID string) string {
+func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionKey, channelKey, selfID, selfName string) string {
 	if !e.injectSender || userID == "" {
 		return content
 	}
@@ -14562,13 +14562,18 @@ func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionK
 	}
 	selfIDField := ""
 	if selfID != "" {
-		selfIDField = " bot_open_id=" + selfID
+		selfIDField = " self_id=" + selfID
+	}
+	selfNameField := ""
+	if selfName != "" {
+		safeSelfName := sanitizePromptHeaderValue(selfName)
+		selfNameField = fmt.Sprintf(" self_name=\"%s\"", safeSelfName)
 	}
 	if userName != "" {
-		safeName := strings.NewReplacer(`"`, `'`, "\n", " ", "\r", "").Replace(userName)
-		return fmt.Sprintf("[cc-connect sender_id=%s sender_name=\"%s\" platform=%s chat_id=%s%s]\n%s", userID, safeName, platform, chatID, selfIDField, content)
+		safeName := sanitizePromptHeaderValue(userName)
+		return fmt.Sprintf("[cc-connect sender_id=%s sender_name=\"%s\" platform=%s chat_id=%s%s%s]\n%s", userID, safeName, platform, chatID, selfIDField, selfNameField, content)
 	}
-	return fmt.Sprintf("[cc-connect sender_id=%s platform=%s chat_id=%s%s]\n%s", userID, platform, chatID, selfIDField, content)
+	return fmt.Sprintf("[cc-connect sender_id=%s platform=%s chat_id=%s%s%s]\n%s", userID, platform, chatID, selfIDField, selfNameField, content)
 }
 
 func platformSelfID(p Platform) string {
@@ -14576,6 +14581,17 @@ func platformSelfID(p Platform) string {
 		return sp.SelfID()
 	}
 	return ""
+}
+
+func platformSelfName(p Platform) string {
+	if sp, ok := p.(SelfNameProvider); ok {
+		return sp.SelfName()
+	}
+	return ""
+}
+
+func sanitizePromptHeaderValue(v string) string {
+	return strings.NewReplacer(`"`, `'`, "\n", " ", "\r", "").Replace(v)
 }
 
 func extractChannelID(sessionKey string) string {

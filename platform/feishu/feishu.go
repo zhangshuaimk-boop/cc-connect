@@ -141,6 +141,7 @@ type Platform struct {
 	cancel           context.CancelFunc
 	dedup            *core.MessageDedup
 	botOpenID        string
+	botName          string
 	peerBots         map[string]string // app_id -> friendly alias, for quoted-reply attribution
 	userNameCache    sync.Map          // open_id -> display name
 	chatNameCache    sync.Map          // chat_id -> chat name
@@ -404,8 +405,18 @@ func (p *Platform) getBotOpenID() string {
 	return p.botOpenID
 }
 
+func (p *Platform) getBotName() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.botName
+}
+
 func (p *Platform) SelfID() string {
 	return p.getBotOpenID()
+}
+
+func (p *Platform) SelfName() string {
+	return p.getBotName()
 }
 
 func (p *Platform) KeepPreviewOnFinish() bool {
@@ -423,13 +434,14 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	// can still receive events and operate correctly. We therefore only attempt
 	// bot open_id discovery eagerly for WebSocket mode.
 	if !p.shouldUseWebhookMode() {
-		if openID, err := p.fetchBotOpenID(); err != nil {
+		if info, err := p.fetchBotInfo(); err != nil {
 			slog.Warn(p.platformName+": failed to get bot open_id, group chat filtering disabled", "error", err)
 		} else {
 			p.mu.Lock()
-			p.botOpenID = openID
+			p.botOpenID = info.openID
+			p.botName = info.name
 			p.mu.Unlock()
-			slog.Info(p.platformName+": bot identified", "open_id", openID)
+			slog.Info(p.platformName+": bot identified", "open_id", info.openID, "name", info.name)
 		}
 	}
 
@@ -2957,26 +2969,32 @@ func findSingleAsterisk(s string) int {
 	return -1
 }
 
-// fetchBotOpenID retrieves the bot's open_id via the Feishu bot info API.
-func (p *Platform) fetchBotOpenID() (string, error) {
+type botInfo struct {
+	openID string
+	name   string
+}
+
+// fetchBotInfo retrieves the bot's identity via the Feishu bot info API.
+func (p *Platform) fetchBotInfo() (botInfo, error) {
 	resp, err := p.client.Get(context.Background(),
 		"/open-apis/bot/v3/info", nil, larkcore.AccessTokenTypeTenant)
 	if err != nil {
-		return "", fmt.Errorf("api call: %w", err)
+		return botInfo{}, fmt.Errorf("api call: %w", err)
 	}
 	var result struct {
 		Code int `json:"code"`
 		Bot  struct {
-			OpenID string `json:"open_id"`
+			OpenID  string `json:"open_id"`
+			AppName string `json:"app_name"`
 		} `json:"bot"`
 	}
 	if err := json.Unmarshal(resp.RawBody, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
+		return botInfo{}, fmt.Errorf("parse response: %w", err)
 	}
 	if result.Code != 0 {
-		return "", fmt.Errorf("api code=%d", result.Code)
+		return botInfo{}, fmt.Errorf("api code=%d", result.Code)
 	}
-	return result.Bot.OpenID, nil
+	return botInfo{openID: result.Bot.OpenID, name: result.Bot.AppName}, nil
 }
 
 // markThreadSessionActive records that a thread sessionKey has been engaged

@@ -84,6 +84,12 @@ type SelfIDProvider interface {
 	SelfID() string
 }
 
+// SelfNameProvider is an optional interface for platforms that know their own
+// display name on the messaging platform.
+type SelfNameProvider interface {
+	SelfName() string
+}
+
 // AgentSystemPrompt returns the system prompt fragment that informs agents about
 // cc-connect capabilities (cron scheduling, etc.).
 // The prompt is designed to be appended to the agent's existing system prompt.
