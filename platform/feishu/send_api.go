@@ -59,7 +59,7 @@ func (api feishuSendAPI) replyMessage(ctx context.Context, rc replyContext, msgT
 
 func (api feishuSendAPI) createMessage(ctx context.Context, chatID, msgType, content string, labels feishuMessageAPILabels) (string, error) {
 	req := larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(larkim.ReceiveIdTypeChatId).
+		ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(chatID).
 			MsgType(msgType).

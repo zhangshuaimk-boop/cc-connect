@@ -22,7 +22,7 @@ cc-connect feishu setup --project my-project
 cc-connect feishu setup --project my-project --app cli_xxx:sec_xxx
 
 # 强制模式（一般不需要）
-cc-connect feishu new --project my-project
+cc-connect feishu new --project my-project --app-name "My Bot"
 cc-connect feishu bind --project my-project --app cli_xxx:sec_xxx
 ```
 
@@ -39,6 +39,8 @@ cc-connect feishu bind --project my-project --app cli_xxx:sec_xxx
 - `setup --app ...` 与 `bind --app ...` 功能等价。
 
 - `setup/new` 会在终端打印二维码和 URL，使用飞书/Lark 手机 App 扫码完成创建。
+- `--app-name` 可预填扫码创建页里的应用显示名；不传时仍由扫码页面填写。
+- 二维码 URL 会带 `source=go-sdk/cc-connect`，注册协议由飞书官方 Go SDK 执行。
 - `--project` 不存在时会自动创建该项目；若项目存在但没有 `feishu/lark` 平台，也会自动补一个。
 - 写回配置时仅定点更新目标字段（`app_id`、`app_secret`、`allow_from` 等），尽量保留原有注释与排版。
 - 该流程会回填凭证；通过扫码新建时，飞书通常会同时预配权限与事件订阅。
