@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/chenhg5/cc-connect/config"
+	"github.com/larksuite/oapi-sdk-go/v3/scene/registration"
 )
 
 func TestResolveFeishuSetupInputs_AutoModeWithoutCredentialsUsesNew(t *testing.T) {
@@ -111,17 +114,6 @@ func TestNormalizeFeishuPlatformType(t *testing.T) {
 				t.Fatalf("normalizeFeishuPlatformType(%q) = %q, want %q", tc.raw, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestContainsString_TrimsAndIgnoresCase(t *testing.T) {
-	values := []string{" authorization_pending ", "CLIENT_SECRET"}
-
-	if !containsString(values, "client_secret") {
-		t.Fatal("containsString should match with trim and case folding")
-	}
-	if containsString(values, "password") {
-		t.Fatal("containsString matched missing value")
 	}
 }
 
@@ -230,6 +222,163 @@ func TestSaveQRCodeImage_InvalidPath(t *testing.T) {
 	err := saveQRCodeImage("https://example.com", "/nonexistent/dir/qr.png")
 	if err == nil {
 		t.Fatal("expected error for invalid path, got nil")
+	}
+}
+
+func TestRunRegistrationFlowUsesSDKOptionsAndPreservesOutputs(t *testing.T) {
+	restore := stubRegisterApp(t, func(ctx context.Context, opts *registration.Options) (*registration.RegisterAppResult, error) {
+		if opts.Source != "cc-connect" {
+			t.Fatalf("Source = %q, want cc-connect", opts.Source)
+		}
+		if !opts.CreateOnly {
+			t.Fatal("CreateOnly = false, want true")
+		}
+		if opts.AppPreset == nil || opts.AppPreset.Name != "测试 Bot" {
+			t.Fatalf("AppPreset = %#v, want name", opts.AppPreset)
+		}
+		if opts.OnQRCode == nil {
+			t.Fatal("OnQRCode is nil")
+		}
+		if opts.OnStatusChange == nil {
+			t.Fatal("OnStatusChange is nil")
+		}
+		opts.OnQRCode(&registration.QRCodeInfo{URL: "https://example.com/qr?source=go-sdk/cc-connect", ExpireIn: 60})
+		opts.OnStatusChange(&registration.StatusChangeInfo{Status: registration.StatusDomainSwitched})
+		return &registration.RegisterAppResult{
+			ClientID:     "cli_sdk",
+			ClientSecret: "sec_sdk",
+			UserInfo:     &registration.UserInfo{OpenID: "  ou_owner  ", TenantBrand: "lark"},
+		}, nil
+	})
+	defer restore()
+
+	qrPath := filepath.Join(t.TempDir(), "qr.png")
+	stdout, stderr := captureCronTimerOutput(t, func() {
+		result, err := runRegistrationFlow(registrationFlowOptions{
+			TimeoutSeconds: 300,
+			QRImagePath:    qrPath,
+			AppName:        " 测试 Bot ",
+		})
+		if err != nil {
+			t.Fatalf("runRegistrationFlow returned error: %v", err)
+		}
+		if result.AppID != "cli_sdk" || result.AppSecret != "sec_sdk" || result.OwnerOpenID != "ou_owner" || result.Platform != "lark" {
+			t.Fatalf("result = %#v", result)
+		}
+	})
+
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "URL: https://example.com/qr?source=go-sdk/cc-connect") {
+		t.Fatalf("stdout missing QR URL:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "QR code saved to: "+qrPath) {
+		t.Fatalf("stdout missing QR image message:\n%s", stdout)
+	}
+	if _, err := os.Stat(qrPath); err != nil {
+		t.Fatalf("QR image not saved: %v", err)
+	}
+}
+
+func TestRunRegistrationFlowMapsRegistrationErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantErr string
+	}{
+		{
+			name: "access denied",
+			err: &registration.AccessDeniedError{RegisterAppError: &registration.RegisterAppError{
+				Code:        "access_denied",
+				Description: "denied",
+			}},
+			wantErr: "authorization denied by user",
+		},
+		{
+			name: "expired",
+			err: &registration.ExpiredError{RegisterAppError: &registration.RegisterAppError{
+				Code:        "expired_token",
+				Description: "expired",
+			}},
+			wantErr: "onboarding session expired",
+		},
+		{
+			name:    "generic",
+			err:     errors.New("network down"),
+			wantErr: "network down",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := stubRegisterApp(t, func(ctx context.Context, opts *registration.Options) (*registration.RegisterAppResult, error) {
+				return nil, tc.err
+			})
+			defer restore()
+
+			_, err := runRegistrationFlow(registrationFlowOptions{TimeoutSeconds: 1})
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestRunRegistrationFlowFiltersTenantBrandStdoutWhenDebugDisabled(t *testing.T) {
+	restore := stubRegisterApp(t, func(ctx context.Context, opts *registration.Options) (*registration.RegisterAppResult, error) {
+		fmt.Println("tenant brand: feishu")
+		fmt.Println("visible sdk output")
+		return &registration.RegisterAppResult{ClientID: "cli", ClientSecret: "sec"}, nil
+	})
+	defer restore()
+
+	stdout, stderr := captureCronTimerOutput(t, func() {
+		if _, err := runRegistrationFlow(registrationFlowOptions{TimeoutSeconds: 1}); err != nil {
+			t.Fatalf("runRegistrationFlow returned error: %v", err)
+		}
+	})
+
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if strings.Contains(stdout, "tenant brand:") {
+		t.Fatalf("stdout leaked tenant brand line:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "visible sdk output") {
+		t.Fatalf("stdout lost non-SDK line:\n%s", stdout)
+	}
+}
+
+func TestRunRegistrationFlowKeepsDebugStdoutAndStatusLogs(t *testing.T) {
+	restore := stubRegisterApp(t, func(ctx context.Context, opts *registration.Options) (*registration.RegisterAppResult, error) {
+		fmt.Println("tenant brand: lark")
+		opts.OnStatusChange(&registration.StatusChangeInfo{Status: registration.StatusSlowDown, Interval: 10})
+		return &registration.RegisterAppResult{ClientID: "cli", ClientSecret: "sec"}, nil
+	})
+	defer restore()
+
+	stdout, stderr := captureCronTimerOutput(t, func() {
+		if _, err := runRegistrationFlow(registrationFlowOptions{TimeoutSeconds: 1, Debug: true}); err != nil {
+			t.Fatalf("runRegistrationFlow returned error: %v", err)
+		}
+	})
+
+	if !strings.Contains(stdout, "tenant brand: lark") {
+		t.Fatalf("debug stdout missing tenant brand line:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "[debug] status=slow_down interval=10") {
+		t.Fatalf("stderr missing debug status:\n%s", stderr)
+	}
+}
+
+func TestAppPresetFromOptions(t *testing.T) {
+	if preset := appPresetFromOptions(registrationFlowOptions{}); preset != nil {
+		t.Fatalf("empty app name returned preset %#v", preset)
+	}
+	preset := appPresetFromOptions(registrationFlowOptions{AppName: "  Demo Bot  "})
+	if preset == nil || preset.Name != "Demo Bot" {
+		t.Fatalf("preset = %#v, want trimmed name", preset)
 	}
 }
 
@@ -376,6 +525,15 @@ func runFeishuCommandHelper(t *testing.T, args ...string) p9FeishuCommandResult 
 		t.Fatalf("run feishu helper command: %v", err)
 	}
 	return result
+}
+
+func stubRegisterApp(t *testing.T, fn func(context.Context, *registration.Options) (*registration.RegisterAppResult, error)) func() {
+	t.Helper()
+	original := registerApp
+	registerApp = fn
+	return func() {
+		registerApp = original
+	}
 }
 
 func TestP9FeishuCommandHelperProcess(t *testing.T) {

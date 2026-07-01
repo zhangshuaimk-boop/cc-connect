@@ -1,20 +1,22 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/chenhg5/cc-connect/config"
+	"github.com/larksuite/oapi-sdk-go/v3/scene/registration"
 	qrterminal "github.com/mdp/qrterminal/v3"
 	"rsc.io/qr"
 )
@@ -24,39 +26,9 @@ const (
 	feishuSetupModeNew  = "new"
 	feishuSetupModeBind = "bind"
 
-	accountsFeishuBaseURL = "https://accounts.feishu.cn"
-	accountsLarkBaseURL   = "https://accounts.larksuite.com"
-	openFeishuBaseURL     = "https://open.feishu.cn"
-	openLarkBaseURL       = "https://open.larksuite.com"
+	openFeishuBaseURL = "https://open.feishu.cn"
+	openLarkBaseURL   = "https://open.larksuite.com"
 )
-
-type registrationInitResponse struct {
-	SupportedAuthMethods []string `json:"supported_auth_methods"`
-	Error                string   `json:"error"`
-	ErrorDescription     string   `json:"error_description"`
-}
-
-type registrationBeginResponse struct {
-	DeviceCode              string `json:"device_code"`
-	VerificationURIComplete string `json:"verification_uri_complete"`
-	Interval                int    `json:"interval"`
-	ExpireIn                int    `json:"expire_in"`
-	Error                   string `json:"error"`
-	ErrorDescription        string `json:"error_description"`
-}
-
-type registrationPollUserInfo struct {
-	OpenID      string `json:"open_id"`
-	TenantBrand string `json:"tenant_brand"`
-}
-
-type registrationPollResponse struct {
-	ClientID         string                   `json:"client_id"`
-	ClientSecret     string                   `json:"client_secret"`
-	UserInfo         registrationPollUserInfo `json:"user_info"`
-	Error            string                   `json:"error"`
-	ErrorDescription string                   `json:"error_description"`
-}
 
 type tenantTokenResponse struct {
 	Code              int    `json:"code"`
@@ -64,15 +36,10 @@ type tenantTokenResponse struct {
 	TenantAccessToken string `json:"tenant_access_token"`
 }
 
-type registrationClient struct {
-	baseURL string
-	http    *http.Client
-	debug   bool
-}
-
 type registrationFlowOptions struct {
 	TimeoutSeconds int
 	QRImagePath    string
+	AppName        string
 	Debug          bool
 }
 
@@ -82,6 +49,8 @@ type registrationFlowResult struct {
 	OwnerOpenID string
 	Platform    string // feishu or lark
 }
+
+var registerApp = registration.RegisterApp
 
 func runFeishu(args []string) {
 	if len(args) == 0 {
@@ -116,6 +85,7 @@ func runFeishuSetup(args []string, requestedMode string) {
 	appSecret := fs.String("app-secret", "", "existing bot app_secret")
 	timeout := fs.Int("timeout", 600, "QR onboarding timeout in seconds")
 	qrImage := fs.String("qr-image", "", "save QR code as PNG image to this path (e.g. qr.png)")
+	appName := fs.String("app-name", "", "pre-fill app display name on the QR onboarding page")
 	setAllowFromEmpty := fs.Bool("set-allow-from-empty", false, "merge owner open_id into allow_from when onboarding returns it (preserves *)")
 	debug := fs.Bool("debug", false, "print debug logs for onboarding requests")
 	_ = fs.Parse(args)
@@ -164,6 +134,7 @@ func runFeishuSetup(args []string, requestedMode string) {
 		result, err := runRegistrationFlow(registrationFlowOptions{
 			TimeoutSeconds: *timeout,
 			QRImagePath:    *qrImage,
+			AppName:        *appName,
 			Debug:          *debug,
 		})
 		if err != nil {
@@ -362,6 +333,7 @@ Options:
   --app-secret <secret>       Existing app_secret
   --timeout <seconds>         QR onboarding timeout (default: 600)
   --qr-image <path>           Save QR code as PNG image file (e.g. --qr-image qr.png)
+  --app-name <name>           Pre-fill app display name on QR onboarding page
   --set-allow-from-empty      Merge owner open_id into allow_from when available (default: false)
   --debug                     Print onboarding debug logs
 
@@ -374,7 +346,7 @@ Examples:
   cc-connect feishu bind --project my-project --app cli_xxx:sec_xxx
 
   # Use only when you must force QR onboarding
-  cc-connect feishu new --project my-project --platform-type lark`)
+  cc-connect feishu new --project my-project --platform-type lark --app-name "My Bot"`)
 }
 
 func resolveFeishuSetupInputs(mode, app, appID, appSecret string) (effectiveMode, resolvedAppID, resolvedAppSecret string, err error) {
@@ -535,142 +507,123 @@ func runRegistrationFlow(opts registrationFlowOptions) (*registrationFlowResult,
 	if opts.TimeoutSeconds <= 0 {
 		opts.TimeoutSeconds = 600
 	}
-	client := &registrationClient{
-		baseURL: accountsFeishuBaseURL,
-		http:    &http.Client{Timeout: 15 * time.Second},
-		debug:   opts.Debug,
-	}
-
-	var initRes registrationInitResponse
-	if err := client.registrationCall("init", nil, &initRes); err != nil {
-		return nil, fmt.Errorf("init failed: %w", err)
-	}
-	if initRes.Error != "" {
-		return nil, fmt.Errorf("%s: %s", initRes.Error, initRes.ErrorDescription)
-	}
-	if len(initRes.SupportedAuthMethods) > 0 && !containsString(initRes.SupportedAuthMethods, "client_secret") {
-		return nil, fmt.Errorf("current environment does not support client_secret auth")
-	}
-
-	var beginRes registrationBeginResponse
-	beginParams := map[string]string{
-		"archetype":         "PersonalAgent",
-		"auth_method":       "client_secret",
-		"request_user_info": "open_id",
-	}
-	if err := client.registrationCall("begin", beginParams, &beginRes); err != nil {
-		return nil, fmt.Errorf("begin failed: %w", err)
-	}
-	if beginRes.Error != "" {
-		return nil, fmt.Errorf("%s: %s", beginRes.Error, beginRes.ErrorDescription)
-	}
-	if beginRes.DeviceCode == "" || beginRes.VerificationURIComplete == "" {
-		return nil, fmt.Errorf("incomplete onboarding response")
-	}
-
-	fmt.Println("请使用飞书/Lark 手机 App 扫码完成机器人创建与授权：")
-	fmt.Printf("URL: %s\n\n", beginRes.VerificationURIComplete)
-	tryPrintTerminalQRCode(beginRes.VerificationURIComplete)
-	if opts.QRImagePath != "" {
-		if err := saveQRCodeImage(beginRes.VerificationURIComplete, opts.QRImagePath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to save QR image: %v\n", err)
-		} else {
-			fmt.Printf("QR code saved to: %s\n\n", opts.QRImagePath)
-		}
-	}
-
-	interval := beginRes.Interval
-	if interval <= 0 {
-		interval = 5
-	}
-	expireIn := beginRes.ExpireIn
-	if expireIn <= 0 {
-		expireIn = opts.TimeoutSeconds
-	}
-
-	timeoutAt := time.Now().Add(time.Duration(expireIn) * time.Second)
-	if limitByFlag := time.Now().Add(time.Duration(opts.TimeoutSeconds) * time.Second); limitByFlag.Before(timeoutAt) {
-		timeoutAt = limitByFlag
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(opts.TimeoutSeconds)*time.Second)
+	defer cancel()
 
 	platformType := "feishu"
-	for time.Now().Before(timeoutAt) {
-		var pollRes registrationPollResponse
-		if err := client.registrationCall("poll", map[string]string{"device_code": beginRes.DeviceCode}, &pollRes); err != nil {
-			return nil, fmt.Errorf("poll failed: %w", err)
-		}
-
-		tenantBrand := strings.ToLower(strings.TrimSpace(pollRes.UserInfo.TenantBrand))
-		if tenantBrand == "lark" {
-			platformType = "lark"
-			if client.baseURL != accountsLarkBaseURL {
-				client.baseURL = accountsLarkBaseURL
+	result, err := invokeRegisterApp(ctx, opts.Debug, &registration.Options{
+		Source:     "cc-connect",
+		CreateOnly: true,
+		AppPreset:  appPresetFromOptions(opts),
+		OnQRCode: func(info *registration.QRCodeInfo) {
+			fmt.Println("请使用飞书/Lark 手机 App 扫码完成机器人创建与授权：")
+			fmt.Printf("URL: %s\n\n", info.URL)
+			tryPrintTerminalQRCode(info.URL)
+			if opts.QRImagePath != "" {
+				if err := saveQRCodeImage(info.URL, opts.QRImagePath); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to save QR image: %v\n", err)
+				} else {
+					fmt.Printf("QR code saved to: %s\n\n", opts.QRImagePath)
+				}
+			}
+		},
+		OnStatusChange: func(info *registration.StatusChangeInfo) {
+			if info.Status == registration.StatusDomainSwitched {
+				platformType = "lark"
 				if opts.Debug {
 					fmt.Fprintln(os.Stderr, "[debug] tenant brand detected as lark, switched onboarding domain")
 				}
-				continue
 			}
-		}
-
-		if pollRes.ClientID != "" && pollRes.ClientSecret != "" {
-			return &registrationFlowResult{
-				AppID:       pollRes.ClientID,
-				AppSecret:   pollRes.ClientSecret,
-				OwnerOpenID: pollRes.UserInfo.OpenID,
-				Platform:    platformType,
-			}, nil
-		}
-
-		switch pollRes.Error {
-		case "", "authorization_pending":
-		case "slow_down":
-			interval += 5
-		case "access_denied":
+			if opts.Debug {
+				fmt.Fprintf(os.Stderr, "[debug] status=%s interval=%d\n", info.Status, info.Interval)
+			}
+		},
+	})
+	if err != nil {
+		var accessDenied *registration.AccessDeniedError
+		var expired *registration.ExpiredError
+		switch {
+		case errors.As(err, &accessDenied):
 			return nil, fmt.Errorf("authorization denied by user")
-		case "expired_token":
+		case errors.As(err, &expired):
 			return nil, fmt.Errorf("onboarding session expired")
 		default:
-			if pollRes.Error != "" {
-				return nil, fmt.Errorf("%s: %s", pollRes.Error, pollRes.ErrorDescription)
-			}
+			return nil, err
 		}
-
-		time.Sleep(time.Duration(interval) * time.Second)
 	}
 
-	return nil, fmt.Errorf("timed out waiting for QR onboarding result")
+	if result.UserInfo != nil && strings.EqualFold(result.UserInfo.TenantBrand, "lark") {
+		platformType = "lark"
+	}
+
+	return &registrationFlowResult{
+		AppID:       result.ClientID,
+		AppSecret:   result.ClientSecret,
+		OwnerOpenID: registrationOwnerOpenID(result.UserInfo),
+		Platform:    platformType,
+	}, nil
 }
 
-func (c *registrationClient) registrationCall(action string, params map[string]string, out any) error {
-	form := url.Values{}
-	form.Set("action", action)
-	for k, v := range params {
-		form.Set(k, v)
+func appPresetFromOptions(opts registrationFlowOptions) *registration.AppPreset {
+	appName := strings.TrimSpace(opts.AppName)
+	if appName == "" {
+		return nil
 	}
+	return &registration.AppPreset{Name: appName}
+}
 
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/oauth/v1/app/registration", strings.NewReader(form.Encode()))
-	if err != nil {
-		return err
+func registrationOwnerOpenID(info *registration.UserInfo) string {
+	if info == nil {
+		return ""
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return strings.TrimSpace(info.OpenID)
+}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
+func invokeRegisterApp(ctx context.Context, debug bool, opts *registration.Options) (*registration.RegisterAppResult, error) {
+	if debug {
+		return registerApp(ctx, opts)
 	}
-	defer resp.Body.Close()
+	return runWithTenantBrandStdoutFiltered(func() (*registration.RegisterAppResult, error) {
+		return registerApp(ctx, opts)
+	})
+}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+func runWithTenantBrandStdoutFiltered(fn func() (*registration.RegisterAppResult, error)) (*registration.RegisterAppResult, error) {
+	oldStdout := os.Stdout
+	readPipe, writePipe, err := os.Pipe()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if c.debug {
-		fmt.Fprintf(os.Stderr, "[debug] registration action=%s status=%d body=%s\n", action, resp.StatusCode, strings.TrimSpace(string(body)))
+	os.Stdout = writePipe
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		filterTenantBrandStdout(readPipe, oldStdout)
+	}()
+
+	result, callErr := fn()
+	os.Stdout = oldStdout
+	closeErr := writePipe.Close()
+	<-done
+	if err := readPipe.Close(); err != nil && callErr == nil {
+		callErr = err
 	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+	if closeErr != nil && callErr == nil {
+		callErr = closeErr
 	}
-	return nil
+	return result, callErr
+}
+
+func filterTenantBrandStdout(r io.Reader, w io.Writer) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "tenant brand:") {
+			continue
+		}
+		fmt.Fprintln(w, line)
+	}
 }
 
 func containsString(values []string, expected string) bool {
