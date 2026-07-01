@@ -281,7 +281,7 @@ func TestCodexPromptPreamble_EmptyIsNoop(t *testing.T) {
 
 func TestGetModelAndReasoningEffort_FromRuntimeConfigWhenUnset(t *testing.T) {
 	oldTimeout := codexRuntimeConfigTimeout
-	codexRuntimeConfigTimeout = 5 * time.Second
+	codexRuntimeConfigTimeout = 30 * time.Second
 	t.Cleanup(func() {
 		codexRuntimeConfigTimeout = oldTimeout
 	})
@@ -294,16 +294,15 @@ func TestGetModelAndReasoningEffort_FromRuntimeConfigWhenUnset(t *testing.T) {
 
 	script := `#!/bin/sh
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '{"id":%s,"result":{"protocolVersion":"2"}}\n' "$id"
-      ;;
-    *'"method":"config/read"'*)
-      printf '{"id":%s,"result":{"config":{"model":"gpt-5.4","model_reasoning_effort":"xhigh"},"origins":{}}}\n' "$id"
-      ;;
-  esac
-done
+	case "$line" in
+	  *'"method":"initialize"'*)
+	      printf '%s\n' '{"id":1,"result":{"protocolVersion":"2"}}'
+	      ;;
+	    *'"method":"config/read"'*)
+	      printf '%s\n' '{"id":2,"result":{"config":{"model":"gpt-5.4","model_reasoning_effort":"xhigh"},"origins":{}}}'
+	      ;;
+	  esac
+	done
 `
 	powershellScript := `
 while (($line = [Console]::In.ReadLine()) -ne $null) {

@@ -586,6 +586,7 @@ app_secret = "fake-secret"
 	if !strings.Contains(prompt, `[cc-connect sender_id=user-1 sender_name="Release User" platform=fake chat_id=chat-1]`) {
 		t.Fatalf("prompt = %q, want default injected sender header", prompt)
 	}
+	platform.waitText(t, "config ok")
 }
 
 func TestReleaseConfig_InjectSenderExplicitFalseDisablesFakeRuntime(t *testing.T) {
@@ -619,6 +620,7 @@ app_secret = "fake-secret"
 	if !strings.Contains(prompt, "disabled sender injection") {
 		t.Fatalf("prompt = %q, want message content", prompt)
 	}
+	platform.waitText(t, "config ok")
 }
 
 func TestReleaseConfig_DefaultsKeepAttachmentsAndFullDisplayEnabled(t *testing.T) {

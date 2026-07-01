@@ -64,7 +64,7 @@ type traexAppServerSession struct {
 
 const (
 	appServerRequestTimeout      = 120 * time.Second
-	appServerUsageRefreshTimeout = 1500 * time.Millisecond
+	appServerUsageRefreshTimeout = 10 * time.Second
 )
 
 func newTraexAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []string, url, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string) (*traexAppServerSession, error) {

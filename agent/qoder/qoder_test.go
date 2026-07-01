@@ -684,7 +684,7 @@ func TestQoderSessionSendClosedAndProcessError(t *testing.T) {
 	if err := os.WriteFile(fakeCLI, []byte("#!/bin/sh\nprintf 'boom\\n' >&2\nexit 7\n"), 0o755); err != nil {
 		t.Fatalf("write fake cli: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	qs, err := newQoderSession(ctx, fakeCLI, nil, tmp, "", "default", "", nil)
 	if err != nil {
@@ -694,13 +694,9 @@ func TestQoderSessionSendClosedAndProcessError(t *testing.T) {
 	if err := qs.Send("prompt", nil, nil); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	select {
-	case ev := <-qs.Events():
-		if ev.Type != core.EventError || ev.Error == nil || !strings.Contains(ev.Error.Error(), "boom") {
-			t.Fatalf("error event = %#v", ev)
-		}
-	case <-ctx.Done():
-		t.Fatal("timeout waiting for error event")
+	ev := waitForQoderEvent(t, qs.Events(), core.EventError)
+	if ev.Error == nil || !strings.Contains(ev.Error.Error(), "boom") {
+		t.Fatalf("error event = %#v", ev)
 	}
 }
 

@@ -231,12 +231,17 @@ func TestStartSessionAppServerFailsFastWhenExecServerIsStub(t *testing.T) {
 	binDir := t.TempDir()
 	writeFakeTraexScript(t, binDir, `#!/bin/sh
 if [ "$1" = "exec-server" ]; then
-  IFS= read -r init_req
-  printf '%s\n' '{"id":1,"result":{"sessionId":"probe-session"}}'
-  IFS= read -r thread_req
-  printf '%s\n' '{"id":2,"error":{"code":-32601,"message":"exec-server stub does not implement thread/start yet"}}'
-  sleep 1
-  exit 0
+  while IFS= read -r req; do
+    case "$req" in
+      *'"method":"initialize"'*)
+        printf '%s\n' '{"id":1,"result":{"sessionId":"probe-session"}}'
+        ;;
+      *'"method":"thread/start"'*)
+        printf '%s\n' '{"id":2,"error":{"code":-32601,"message":"exec-server stub does not implement thread/start yet"}}'
+        exit 0
+        ;;
+    esac
+  done
 fi
 exit 0
 `)
