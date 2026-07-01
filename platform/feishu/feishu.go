@@ -142,10 +142,10 @@ type Platform struct {
 	dedup            *core.MessageDedup
 	botOpenID        string
 	botName          string
-	peerBots         map[string]string // app_id -> friendly alias, for quoted-reply attribution
-	userNameCache    sync.Map          // open_id -> display name
-	chatNameCache    sync.Map          // chat_id -> chat name
-	chatMemberCache  sync.Map          // chatID -> *chatMemberEntry
+	peerRegistry     *core.PeerRegistry
+	userNameCache    sync.Map // open_id -> display name
+	chatNameCache    sync.Map // chat_id -> chat name
+	chatMemberCache  sync.Map // chatID -> *chatMemberEntry
 	recalledMu       sync.Mutex
 	recalledMsgIDs   map[string]time.Time // message_id -> recall time, short TTL race guard
 	// Webhook mode fields (for Lark international version)
@@ -212,6 +212,7 @@ func coerceMilliseconds(v any) (int64, error) {
 
 // compile-time interface assertions
 var _ core.RelayGroupVisibilityTarget = (*Platform)(nil)
+var _ core.PeerRegistryTarget = (*Platform)(nil)
 
 type interactivePlatform struct {
 	*Platform
@@ -274,15 +275,6 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	noReplyToTrigger := false
 	if v, ok := opts["reply_to_trigger"].(bool); ok && !v {
 		noReplyToTrigger = true
-	}
-
-	peerBots := map[string]string{}
-	if raw, ok := opts["peer_bots"].(map[string]any); ok {
-		for k, v := range raw {
-			if s, ok := v.(string); ok && s != "" {
-				peerBots[k] = s
-			}
-		}
 	}
 
 	progressStyle := "legacy"
@@ -353,7 +345,6 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		port:                       port,
 		callbackPath:               callbackPath,
 		encryptKey:                 encryptKey,
-		peerBots:                   peerBots,
 		imageBatch:                 make(map[string]*imageBatchEntry),
 		imageBatchWindow:           imageBatchWindow,
 	}
@@ -419,6 +410,12 @@ func (p *Platform) SelfName() string {
 	return p.getBotName()
 }
 
+func (p *Platform) SetPeerRegistry(registry *core.PeerRegistry) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.peerRegistry = registry
+}
+
 func (p *Platform) KeepPreviewOnFinish() bool {
 	return p.useInteractiveCard
 }
@@ -440,7 +437,11 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 			p.mu.Lock()
 			p.botOpenID = info.openID
 			p.botName = info.name
+			registry := p.peerRegistry
 			p.mu.Unlock()
+			if registry != nil {
+				registry.UpdateAPIName(p.appID, info.name)
+			}
 			slog.Info(p.platformName+": bot identified", "open_id", info.openID, "name", info.name)
 		}
 	}
@@ -1740,15 +1741,19 @@ func (p *Platform) fetchQuotedMessage(ctx context.Context, parentID string) quot
 
 // resolveBotSenderName returns a display name for a bot sender in a quoted
 // reply chain. Feishu sets sender.id to the bot's app_id (globally stable,
-// not an open_id). We consult the peer_bots config to map app_id → alias;
-// if the app is unknown, we surface the app_id so operators can add it to
-// the config rather than seeing an ambiguous "Bot".
+// not an open_id). The daemon-local peer registry maps known app_id values
+// to the bot name or project fallback.
 func (p *Platform) resolveBotSenderName(appID string) string {
 	if appID == "" {
 		return "Bot"
 	}
-	if alias := p.peerBots[appID]; alias != "" {
-		return alias
+	p.mu.RLock()
+	registry := p.peerRegistry
+	p.mu.RUnlock()
+	if registry != nil {
+		if name, ok := registry.Resolve(appID); ok {
+			return name
+		}
 	}
 	return "Bot[" + appID + "]"
 }

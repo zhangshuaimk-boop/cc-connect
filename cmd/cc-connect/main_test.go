@@ -50,6 +50,21 @@ func (s *stubMainAgentSession) Close() error                                    
 func (s *stubMainAgentSession) CurrentSessionID() string                              { return "" }
 func (s *stubMainAgentSession) Alive() bool                                           { return true }
 
+type stubPeerRegistryPlatform struct {
+	registry *core.PeerRegistry
+}
+
+func (p *stubPeerRegistryPlatform) Name() string { return "stub-peer" }
+func (p *stubPeerRegistryPlatform) Start(core.MessageHandler) error {
+	return nil
+}
+func (p *stubPeerRegistryPlatform) Reply(context.Context, any, string) error { return nil }
+func (p *stubPeerRegistryPlatform) Send(context.Context, any, string) error  { return nil }
+func (p *stubPeerRegistryPlatform) Stop() error                              { return nil }
+func (p *stubPeerRegistryPlatform) SetPeerRegistry(r *core.PeerRegistry) {
+	p.registry = r
+}
+
 func TestProjectStatePath(t *testing.T) {
 	dataDir := t.TempDir()
 	got := projectStatePath(dataDir, "my/project:one")
@@ -98,6 +113,53 @@ func TestResolveResetOnIdle(t *testing.T) {
 				t.Errorf("defaulted = %v, want %v", gotDefaulted, tc.wantDefaulted)
 			}
 		})
+	}
+}
+
+func TestBuildPeerRegistrySeed(t *testing.T) {
+	cfg := &config.Config{Projects: []config.ProjectConfig{
+		{
+			Name: "alpha",
+			Platforms: []config.PlatformConfig{
+				{Type: "feishu", Options: map[string]any{"app_id": "cli_alpha"}},
+				{Type: "lark", Options: map[string]any{"app_id": "cli_lark"}},
+			},
+		},
+		{
+			Name: "ignored",
+			Platforms: []config.PlatformConfig{
+				{Type: "other", Options: map[string]any{"app_id": "cli_other"}},
+				{Type: "feishu", Options: map[string]any{"app_id": ""}},
+			},
+		},
+	}}
+
+	got := buildPeerRegistrySeed(cfg)
+	want := map[string]string{"cli_alpha": "alpha", "cli_lark": "alpha"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildPeerRegistrySeed = %#v, want %#v", got, want)
+	}
+}
+
+func TestReloadPeerRegistry(t *testing.T) {
+	registry := core.NewPeerRegistry(map[string]string{"cli_stale": "stale"})
+	registry.UpdateAPIName("cli_stale", "Stale API")
+
+	reloadPeerRegistry(registry, map[string]string{"cli_a": "alpha"})
+
+	if got, ok := registry.Resolve("cli_a"); !ok || got != "alpha" {
+		t.Fatalf("Resolve after reload = (%q, %v), want (alpha, true)", got, ok)
+	}
+	if _, ok := registry.Resolve("cli_stale"); ok {
+		t.Fatal("stale app resolved after reload")
+	}
+
+	reloadPeerRegistry(registry, map[string]string{"cli_b": "beta"})
+	if _, ok := registry.Resolve("cli_a"); ok {
+		t.Fatal("stale app resolved after reload")
+	}
+	if got, ok := registry.Resolve("cli_b"); !ok || got != "beta" {
+		t.Fatalf("Resolve new app = (%q, %v), want (beta, true)", got, ok)
 	}
 }
 

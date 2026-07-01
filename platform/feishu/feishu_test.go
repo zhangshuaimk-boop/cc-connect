@@ -995,18 +995,21 @@ func TestStripMentions(t *testing.T) {
 }
 
 func TestResolveBotSenderName(t *testing.T) {
-	p := &Platform{peerBots: map[string]string{
-		"cli_known": "Jeeves",
-		"cli_other": "Ivy",
-	}}
+	registry := core.NewPeerRegistry(map[string]string{
+		"cli_auto":    "Auto Fallback",
+		"cli_pending": "Pending Fallback",
+	})
+	registry.UpdateAPIName("cli_auto", "Auto API")
+	p := &Platform{}
+	p.SetPeerRegistry(registry)
 	tests := []struct {
 		name  string
 		appID string
 		want  string
 	}{
 		{"empty app id falls back to Bot", "", "Bot"},
-		{"known app id resolves to alias", "cli_known", "Jeeves"},
-		{"another known app id", "cli_other", "Ivy"},
+		{"registry API name wins", "cli_auto", "Auto API"},
+		{"registry pending falls back to project name", "cli_pending", "Pending Fallback"},
 		{"unknown app id surfaces id", "cli_unknown", "Bot[cli_unknown]"},
 	}
 	for _, tt := range tests {
@@ -1022,10 +1025,10 @@ func TestResolveBotSenderName(t *testing.T) {
 func TestResolveBotSenderName_NilMap(t *testing.T) {
 	p := &Platform{}
 	if got := p.resolveBotSenderName("cli_any"); got != "Bot[cli_any]" {
-		t.Errorf("nil peerBots: got %q, want %q", got, "Bot[cli_any]")
+		t.Errorf("nil peer registry: got %q, want %q", got, "Bot[cli_any]")
 	}
 	if got := p.resolveBotSenderName(""); got != "Bot" {
-		t.Errorf("nil peerBots + empty id: got %q, want %q", got, "Bot")
+		t.Errorf("nil peer registry + empty id: got %q, want %q", got, "Bot")
 	}
 }
 

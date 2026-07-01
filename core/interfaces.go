@@ -41,6 +41,12 @@ type RelayGroupVisibilityTarget interface {
 	RelayGroupVisibilityKey(callerSessionKey string) (groupSessionKey string, ok bool)
 }
 
+// PeerRegistryTarget is an optional interface for platforms that can publish
+// and consume daemon-local bot identities for cross-bot attribution.
+type PeerRegistryTarget interface {
+	SetPeerRegistry(*PeerRegistry)
+}
+
 // MessageRecallDetector is an optional interface for platforms that can check
 // whether the message targeted by a reply context was recalled/deleted.
 type MessageRecallDetector interface {

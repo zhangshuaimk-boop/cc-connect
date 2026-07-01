@@ -367,6 +367,7 @@ func main() {
 
 	engines := make([]*core.Engine, 0, len(cfg.Projects))
 	effectiveWorkDirs := make([]string, 0, len(cfg.Projects))
+	peerRegistry := core.NewPeerRegistry(buildPeerRegistrySeed(cfg))
 
 	for _, proj := range cfg.Projects {
 		// Inject project-level run_as_user / run_as_env into the agent's
@@ -391,16 +392,18 @@ func main() {
 
 		var platforms []core.Platform
 		for _, pc := range proj.Platforms {
-			opts := make(map[string]any, len(pc.Options)+2)
+			opts := make(map[string]any, len(pc.Options)+1)
 			for k, v := range pc.Options {
 				opts[k] = v
 			}
 			opts["cc_data_dir"] = cfg.DataDir
-			opts["cc_project"] = proj.Name
 			p, err := core.CreatePlatform(pc.Type, opts)
 			if err != nil {
 				slog.Error("failed to create platform", "project", proj.Name, "type", pc.Type, "error", err)
 				os.Exit(1)
+			}
+			if target, ok := p.(core.PeerRegistryTarget); ok {
+				target.SetPeerRegistry(peerRegistry)
 			}
 			platforms = append(platforms, p)
 		}
@@ -937,8 +940,9 @@ func main() {
 		// Wire config reload
 		capturedEngine := engine
 		capturedProjName := projName
+		capturedPeerRegistry := peerRegistry
 		engine.SetConfigReloadFunc(func() (*core.ConfigReloadResult, error) {
-			return reloadConfig(configPath, capturedProjName, capturedEngine)
+			return reloadConfig(configPath, capturedProjName, capturedEngine, capturedPeerRegistry)
 		})
 
 		// Wire /web command callbacks
@@ -1028,6 +1032,8 @@ func main() {
 		slog.Error("all engines failed to start, exiting")
 		os.Exit(1)
 	}
+	totalPeers, apiResolvedPeers, fallbackPeers := peerRegistry.Stats()
+	slog.Info("peer registry ready", "total", totalPeers, "api_resolved", apiResolvedPeers, "fallback", fallbackPeers)
 
 	if cronSched != nil {
 		if err := cronSched.Start(); err != nil {
@@ -1632,7 +1638,7 @@ func setupLogger(level string, w io.Writer) {
 
 // reloadConfig re-reads config.toml and applies hot-reloadable settings
 // (display, providers, commands) to the given engine.
-func reloadConfig(configPath, projName string, engine *core.Engine) (*core.ConfigReloadResult, error) {
+func reloadConfig(configPath, projName string, engine *core.Engine, peerRegistry *core.PeerRegistry) (*core.ConfigReloadResult, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("reload config: %w", err)
@@ -1656,6 +1662,8 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 	if proj == nil {
 		return nil, fmt.Errorf("project %q not found in config", projName)
 	}
+
+	reloadPeerRegistry(peerRegistry, buildPeerRegistrySeed(cfg))
 
 	// Reload display config (includes legacy quiet → display mapping)
 	mode, tm, tool, tmlen, toollen, showCtx, showFooter := config.EffectiveDisplay(cfg, proj)
@@ -1765,6 +1773,38 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 
 	slog.Info("config reloaded", "project", projName)
 	return result, nil
+}
+
+func buildPeerRegistrySeed(cfg *config.Config) map[string]string {
+	seed := map[string]string{}
+	if cfg == nil {
+		return seed
+	}
+	for _, proj := range cfg.Projects {
+		for _, pc := range proj.Platforms {
+			switch strings.ToLower(strings.TrimSpace(pc.Type)) {
+			case "feishu", "lark":
+			default:
+				continue
+			}
+			appID, _ := pc.Options["app_id"].(string)
+			appID = strings.TrimSpace(appID)
+			if appID == "" {
+				continue
+			}
+			seed[appID] = proj.Name
+		}
+	}
+	return seed
+}
+
+func reloadPeerRegistry(registry *core.PeerRegistry, seed map[string]string) {
+	if registry == nil {
+		return
+	}
+	registry.ResetFromConfig(seed)
+	total, apiResolved, fallback := registry.Stats()
+	slog.Info("peer registry reloaded", "total", total, "api_resolved", apiResolved, "fallback", fallback)
 }
 
 func buildUserRoleManager(uc *config.UsersConfig) *core.UserRoleManager {
