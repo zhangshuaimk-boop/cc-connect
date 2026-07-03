@@ -31,6 +31,40 @@ func TestNew_DefaultsToInteractivePlatform(t *testing.T) {
 	}
 }
 
+func TestFormattingInstructions(t *testing.T) {
+	var p Platform
+	var _ core.FormattingInstructionProvider = (*Platform)(nil)
+
+	prompt := p.FormattingInstructions()
+	for _, want := range []string{
+		"## Feishu/Lark channel facts",
+		"Feishu users cannot open local filesystem paths",
+		"cc-connect send",
+		"Do not rely on CLI-only interactive selection UI",
+		"Feishu rich cards have a limited JSON budget, currently about 28KB",
+		"A mention event may contain only the current message text",
+		"If lark-cli is available",
+		"CC_SESSION_KEY",
+		"[cc-connect sender_id=...]",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("FormattingInstructions() missing %q in:\n%s", want, prompt)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"You are",
+		"你是",
+		"回复要",
+		"全程中文",
+		"business method",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("FormattingInstructions() contains non-channel instruction %q in:\n%s", forbidden, prompt)
+		}
+	}
+}
+
 func TestNew_CanDisableInteractiveCards(t *testing.T) {
 	p, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": false})
 	if err != nil {
