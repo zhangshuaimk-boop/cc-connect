@@ -12,6 +12,7 @@ type feishuInboundMessage struct {
 	chatID       string
 	chatType     string
 	userID       string
+	senderType   string
 	messageID    string
 	content      string
 	hasContent   bool
@@ -36,6 +37,7 @@ func parseFeishuInboundMessage(event *larkim.P2MessageReceiveV1) feishuInboundMe
 	}
 	if sender != nil {
 		in.userID = userIDFromEvent(sender.SenderId)
+		in.senderType = stringValue(sender.SenderType)
 	}
 	if msg == nil {
 		return in
@@ -92,6 +94,7 @@ type feishuDispatchInput struct {
 	messageID    string
 	sessionKey   string
 	userID       string
+	senderType   string
 	chatID       string
 	rctx         replyContext
 	parentID     string
@@ -106,6 +109,7 @@ func (in feishuInboundMessage) dispatchInput(sessionKey string) feishuDispatchIn
 		messageID:    in.messageID,
 		sessionKey:   sessionKey,
 		userID:       in.userID,
+		senderType:   in.senderType,
 		chatID:       in.chatID,
 		rctx:         replyContext{messageID: in.messageID, chatID: in.chatID, sessionKey: sessionKey},
 		parentID:     in.parentID,

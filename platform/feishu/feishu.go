@@ -1197,7 +1197,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
 	// correctness before spawning the goroutine.
-	go p.dispatchMessage(ctx, dispatch.msgType, dispatch.content, dispatch.mentions, dispatch.messageID, dispatch.sessionKey, dispatch.userID, dispatch.chatID, dispatch.rctx, dispatch.parentID, dispatch.createTimeMs)
+	go p.dispatchMessage(ctx, dispatch.msgType, dispatch.content, dispatch.mentions, dispatch.messageID, dispatch.sessionKey, dispatch.userID, dispatch.senderType, dispatch.chatID, dispatch.rctx, dispatch.parentID, dispatch.createTimeMs)
 
 	return nil
 }
@@ -1214,7 +1214,7 @@ func (p *Platform) replyUnauthorizedAccess(ctx context.Context, rctx replyContex
 // dispatchMessage handles the message content parsing, media download, and
 // handler invocation. It runs in its own goroutine so that onMessage returns
 // quickly and does not block the SDK event loop.
-func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64) {
+func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, senderType, chatID string, rctx replyContext, parentID string, createTimeMs int64) {
 	if p.isMessageRecalled(messageID) {
 		slog.Debug(p.tag()+": recalled message ignored in async dispatch", "message_id", messageID)
 		return
@@ -1223,7 +1223,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 	// Resolve user and chat names asynchronously so SDK dispatcher is not blocked.
 	userName := ""
 	if userID != "" {
-		userName = p.resolveUserName(userID)
+		userName = p.resolveSenderName(ctx, messageID, userID, senderType)
 	}
 	chatName := p.resolveChatName(chatID)
 
@@ -1480,6 +1480,25 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 	}
 }
 
+func (p *Platform) resolveSenderName(ctx context.Context, messageID, senderID, senderType string) string {
+	switch senderType {
+	case "app":
+		if name := p.resolveMessageSenderName(ctx, messageID); name != "" {
+			return name
+		}
+		return senderID
+	default:
+		name := p.resolveUserName(senderID)
+		if name != "" && name != senderID {
+			return name
+		}
+		if fallback := p.resolveMessageSenderName(ctx, messageID); fallback != "" {
+			return fallback
+		}
+		return name
+	}
+}
+
 // resolveUserName fetches a user's display name via the Contact API, with caching.
 func (p *Platform) resolveUserName(openID string) string {
 	if !isValidFeishuLookupID(openID) {
@@ -1732,6 +1751,43 @@ func (p *Platform) resolveBotSenderName(appID string) string {
 		return alias
 	}
 	return "Bot[" + appID + "]"
+}
+
+func (p *Platform) resolveMessageSenderName(ctx context.Context, messageID string) string {
+	if p.client == nil || messageID == "" {
+		return ""
+	}
+	apiPath := fmt.Sprintf("/open-apis/im/v1/messages/%s", messageID)
+	apiResp, err := p.client.Get(ctx, apiPath, nil, larkcore.AccessTokenTypeTenant)
+	if err != nil {
+		slog.Debug(p.tag()+": resolve message sender failed", "message_id", messageID, "error", err)
+		return ""
+	}
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			Items []struct {
+				Sender struct {
+					ID         string `json:"id"`
+					IDType     string `json:"id_type"`
+					SenderType string `json:"sender_type"`
+					SenderName string `json:"sender_name"`
+				} `json:"sender"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(apiResp.RawBody, &resp); err != nil || resp.Code != 0 || len(resp.Data.Items) == 0 {
+		slog.Debug(p.tag()+": resolve message sender parse failed", "message_id", messageID)
+		return ""
+	}
+	sender := resp.Data.Items[0].Sender
+	if sender.SenderName != "" {
+		return sender.SenderName
+	}
+	if sender.SenderType == "app" && sender.IDType == "app_id" {
+		return p.resolveBotSenderName(sender.ID)
+	}
+	return ""
 }
 
 // fetchSingleMessage retrieves one message by ID from the Feishu API and

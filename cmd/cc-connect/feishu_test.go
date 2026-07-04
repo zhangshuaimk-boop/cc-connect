@@ -236,6 +236,12 @@ func TestRunRegistrationFlowUsesSDKOptionsAndPreservesOutputs(t *testing.T) {
 		if opts.AppPreset == nil || opts.AppPreset.Name != "测试 Bot" {
 			t.Fatalf("AppPreset = %#v, want name", opts.AppPreset)
 		}
+		if opts.Addons == nil {
+			t.Fatal("Addons is nil")
+		}
+		if got := opts.Addons.Scopes.Tenant; !stringSlicesEqual(got, feishuRegistrationTenantScopes) {
+			t.Fatalf("tenant scopes = %#v, want %#v", got, feishuRegistrationTenantScopes)
+		}
 		if opts.OnQRCode == nil {
 			t.Fatal("OnQRCode is nil")
 		}
@@ -379,6 +385,20 @@ func TestAppPresetFromOptions(t *testing.T) {
 	preset := appPresetFromOptions(registrationFlowOptions{AppName: "  Demo Bot  "})
 	if preset == nil || preset.Name != "Demo Bot" {
 		t.Fatalf("preset = %#v, want trimmed name", preset)
+	}
+}
+
+func TestAppAddonsForRegistration(t *testing.T) {
+	addons := appAddonsForRegistration()
+	if addons == nil {
+		t.Fatal("addons is nil")
+	}
+	if got := addons.Scopes.Tenant; !stringSlicesEqual(got, feishuRegistrationTenantScopes) {
+		t.Fatalf("tenant scopes = %#v, want %#v", got, feishuRegistrationTenantScopes)
+	}
+	addons.Scopes.Tenant[0] = "mutated"
+	if feishuRegistrationTenantScopes[0] == "mutated" {
+		t.Fatal("appAddonsForRegistration returned tenant scope slice alias")
 	}
 }
 
@@ -534,6 +554,18 @@ func stubRegisterApp(t *testing.T, fn func(context.Context, *registration.Option
 	return func() {
 		registerApp = original
 	}
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestP9FeishuCommandHelperProcess(t *testing.T) {

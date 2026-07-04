@@ -81,6 +81,7 @@ func TestDispatchMessageDropsRecalledMessageBeforeHandler(t *testing.T) {
 		"feishu:ou_user:ou_user",
 		"",
 		"",
+		"",
 		replyContext{messageID: "om_drop", sessionKey: "feishu:ou_user:ou_user"},
 		"",
 		0,
@@ -187,6 +188,7 @@ func TestDispatchMessageIncludesQuotedImage(t *testing.T) {
 				"feishu:oc_chat:ou_user",
 				"",
 				"",
+				"",
 				replyContext{messageID: "om_child", sessionKey: "feishu:oc_chat:ou_user"},
 				parentMessageID,
 				0,
@@ -250,6 +252,22 @@ func TestDispatchMessageKeepsMentionOnlyQuotedText(t *testing.T) {
 					},
 				},
 			})
+		case r.URL.Path == "/open-apis/im/v1/messages/om_child":
+			w.Header().Set("Content-Type", "application/json")
+			writeJSON(t, w, map[string]any{
+				"code": 0,
+				"msg":  "success",
+				"data": map[string]any{
+					"items": []map[string]any{{
+						"sender": map[string]any{
+							"id":          "ou_user",
+							"id_type":     "open_id",
+							"sender_type": "user",
+							"sender_name": "张帅",
+						},
+					}},
+				},
+			})
 		case strings.HasPrefix(r.URL.Path, "/open-apis/contact/v3/users/"):
 			w.Header().Set("Content-Type", "application/json")
 			writeJSON(t, w, map[string]any{"code": 0, "msg": "success"})
@@ -287,6 +305,7 @@ func TestDispatchMessageKeepsMentionOnlyQuotedText(t *testing.T) {
 		"om_child",
 		"feishu:oc_chat:ou_user",
 		"ou_user",
+		"user",
 		"oc_chat",
 		replyContext{messageID: "om_child", sessionKey: "feishu:oc_chat:ou_user"},
 		parentMessageID,
@@ -1010,6 +1029,175 @@ func TestResolveBotSenderName_NilMap(t *testing.T) {
 	}
 }
 
+func TestDispatchMessageResolvesAppSenderName(t *testing.T) {
+	const (
+		appID     = "cli_receiver"
+		appSecret = "secret"
+		messageID = "om_app_sender"
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			writeJSON(t, w, map[string]any{
+				"code":                0,
+				"tenant_access_token": "tenant-token",
+				"expire":              7200,
+			})
+		case "/open-apis/im/v1/messages/" + messageID:
+			writeJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"items": []map[string]any{{
+						"sender": map[string]any{
+							"id":          "cli_sender",
+							"id_type":     "app_id",
+							"sender_type": "app",
+							"sender_name": "成语接龙陪玩",
+						},
+					}},
+				},
+			})
+		case "/open-apis/im/v1/chats/oc_chat":
+			writeJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{"name": "测试群"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	got := make(chan *core.Message, 1)
+	p := &Platform{
+		platformName: "feishu",
+		domain:       srv.URL,
+		appID:        appID,
+		appSecret:    appSecret,
+		client: lark.NewClient(appID, appSecret,
+			lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(srv.Client()),
+		),
+		handler: func(_ core.Platform, msg *core.Message) {
+			got <- msg
+		},
+	}
+
+	p.dispatchMessage(
+		context.Background(),
+		"text",
+		`{"text":"hello"}`,
+		nil,
+		messageID,
+		"feishu:oc_chat:ou_sender",
+		"ou_sender",
+		"app",
+		"oc_chat",
+		replyContext{messageID: messageID, chatID: "oc_chat", sessionKey: "feishu:oc_chat:ou_sender"},
+		"",
+		0,
+	)
+
+	select {
+	case msg := <-got:
+		if msg.UserID != "ou_sender" {
+			t.Fatalf("UserID = %q, want ou_sender", msg.UserID)
+		}
+		if msg.UserName != "成语接龙陪玩" {
+			t.Fatalf("UserName = %q, want bot display name", msg.UserName)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for app sender message")
+	}
+}
+
+func TestDispatchMessageFallsBackToMessageSenderNameForUser(t *testing.T) {
+	const (
+		appID     = "cli_receiver"
+		appSecret = "secret"
+		messageID = "om_user_sender"
+		userID    = "ou_user_sender"
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
+			writeJSON(t, w, map[string]any{
+				"code":                0,
+				"tenant_access_token": "tenant-token",
+				"expire":              7200,
+			})
+		case strings.HasPrefix(r.URL.Path, "/open-apis/contact/v3/users/"):
+			writeJSON(t, w, map[string]any{"code": 0, "msg": "success"})
+		case r.URL.Path == "/open-apis/im/v1/messages/"+messageID:
+			writeJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"items": []map[string]any{{
+						"sender": map[string]any{
+							"id":          userID,
+							"id_type":     "open_id",
+							"sender_type": "user",
+							"sender_name": "张帅",
+						},
+					}},
+				},
+			})
+		case r.URL.Path == "/open-apis/im/v1/chats/oc_chat":
+			writeJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{"name": "测试群"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	got := make(chan *core.Message, 1)
+	p := &Platform{
+		platformName: "feishu",
+		domain:       srv.URL,
+		appID:        appID,
+		appSecret:    appSecret,
+		client: lark.NewClient(appID, appSecret,
+			lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(srv.Client()),
+		),
+		handler: func(_ core.Platform, msg *core.Message) {
+			got <- msg
+		},
+	}
+
+	p.dispatchMessage(
+		context.Background(),
+		"text",
+		`{"text":"hello"}`,
+		nil,
+		messageID,
+		"feishu:oc_chat:"+userID,
+		userID,
+		"user",
+		"oc_chat",
+		replyContext{messageID: messageID, chatID: "oc_chat", sessionKey: "feishu:oc_chat:" + userID},
+		"",
+		0,
+	)
+
+	select {
+	case msg := <-got:
+		if msg.UserID != userID {
+			t.Fatalf("UserID = %q, want %s", msg.UserID, userID)
+		}
+		if msg.UserName != "张帅" {
+			t.Fatalf("UserName = %q, want message sender name", msg.UserName)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for user sender message")
+	}
+}
+
 func TestIsAttachmentMsgType(t *testing.T) {
 	tests := []struct {
 		msgType string
@@ -1426,6 +1614,7 @@ func TestDispatchMessageCoalescesImageBatch(t *testing.T) {
 					msgID,
 					sessionKey,
 					userID,
+					"user",
 					chatID,
 					replyContext{messageID: msgID, chatID: chatID, sessionKey: sessionKey},
 					"", // no parentID so we exercise the batch path
@@ -1528,6 +1717,7 @@ func TestDispatchMessageSingleImageRegression(t *testing.T) {
 		"om_single",
 		"feishu:oc_single:ou_user",
 		"ou_user",
+		"user",
 		"oc_single",
 		replyContext{messageID: "om_single", chatID: "oc_single", sessionKey: "feishu:oc_single:ou_user"},
 		"", 0,
@@ -1622,6 +1812,7 @@ func TestDispatchMessageQuotedImageNotBatched(t *testing.T) {
 		"om_quoted_child",
 		"feishu:oc_chat:ou_user",
 		"ou_user",
+		"user",
 		"oc_chat",
 		replyContext{messageID: "om_quoted_child", chatID: "oc_chat", sessionKey: "feishu:oc_chat:ou_user"},
 		parentMessageID, 0,
