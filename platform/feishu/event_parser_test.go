@@ -50,6 +50,9 @@ func TestParseFeishuInboundMessageExtractsCoreInputs(t *testing.T) {
 	if got.userID != "ou_user" || got.messageID != "om_msg" {
 		t.Fatalf("sender/message fields = user:%q message:%q", got.userID, got.messageID)
 	}
+	if got.senderType != "user" {
+		t.Fatalf("senderType = %q, want user", got.senderType)
+	}
 	if !got.hasContent || got.content != content {
 		t.Fatalf("content = %q has=%v, want raw content", got.content, got.hasContent)
 	}
@@ -64,7 +67,7 @@ func TestParseFeishuInboundMessageExtractsCoreInputs(t *testing.T) {
 	}
 
 	dispatch := got.dispatchInput("feishu:oc_chat:ou_user")
-	if dispatch.content != content || dispatch.messageID != "om_msg" || dispatch.userID != "ou_user" {
+	if dispatch.content != content || dispatch.messageID != "om_msg" || dispatch.userID != "ou_user" || dispatch.senderType != "user" {
 		t.Fatalf("dispatch input lost content/message/user: %#v", dispatch)
 	}
 	if dispatch.rctx != (replyContext{messageID: "om_msg", chatID: "oc_chat", sessionKey: "feishu:oc_chat:ou_user"}) {

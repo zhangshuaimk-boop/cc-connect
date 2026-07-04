@@ -30,6 +30,13 @@ const (
 	openLarkBaseURL   = "https://open.larksuite.com"
 )
 
+var feishuRegistrationTenantScopes = []string{
+	"contact:contact.base:readonly",
+	"contact:contact:access_as_app",
+	"contact:contact:readonly",
+	"contact:contact:readonly_as_app",
+}
+
 type tenantTokenResponse struct {
 	Code              int    `json:"code"`
 	Msg               string `json:"msg"`
@@ -515,6 +522,7 @@ func runRegistrationFlow(opts registrationFlowOptions) (*registrationFlowResult,
 		Source:     "cc-connect",
 		CreateOnly: true,
 		AppPreset:  appPresetFromOptions(opts),
+		Addons:     appAddonsForRegistration(),
 		OnQRCode: func(info *registration.QRCodeInfo) {
 			fmt.Println("请使用飞书/Lark 手机 App 扫码完成机器人创建与授权：")
 			fmt.Printf("URL: %s\n\n", info.URL)
@@ -570,6 +578,14 @@ func appPresetFromOptions(opts registrationFlowOptions) *registration.AppPreset 
 		return nil
 	}
 	return &registration.AppPreset{Name: appName}
+}
+
+func appAddonsForRegistration() *registration.AppAddons {
+	return &registration.AppAddons{
+		Scopes: registration.AppAddonsScopes{
+			Tenant: append([]string(nil), feishuRegistrationTenantScopes...),
+		},
+	}
 }
 
 func registrationOwnerOpenID(info *registration.UserInfo) string {
