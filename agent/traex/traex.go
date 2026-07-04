@@ -41,6 +41,9 @@ type Agent struct {
 	mode            string
 	backend         string // "exec" | "app_server"
 	appServerURL    string
+	systemPrompt    string
+	appendPrompt    string
+	platformPrompt  string
 	cliBin          string   // CLI binary name, default "traex"
 	cliExtraArgs    []string // extra args parsed from cmd after the binary
 	providers       []core.ProviderConfig
@@ -60,6 +63,8 @@ func New(opts map[string]any) (core.Agent, error) {
 	mode, _ := opts["mode"].(string)
 	backend, _ := opts["backend"].(string)
 	appServerURL, _ := opts["app_server_url"].(string)
+	systemPrompt, _ := opts["system_prompt"].(string)
+	appendPrompt, _ := opts["append_system_prompt"].(string)
 	mode = normalizeMode(mode)
 	backend = normalizeBackend(backend)
 	appServerURL = normalizeAppServerURL(appServerURL)
@@ -77,6 +82,8 @@ func New(opts map[string]any) (core.Agent, error) {
 		mode:            mode,
 		backend:         backend,
 		appServerURL:    appServerURL,
+		systemPrompt:    strings.TrimSpace(systemPrompt),
+		appendPrompt:    strings.TrimSpace(appendPrompt),
 		cliBin:          cliBin,
 		cliExtraArgs:    cliExtraArgs,
 		configEnv:       core.ParseConfigEnv(opts),
@@ -202,6 +209,12 @@ func (a *Agent) SetSessionEnv(env []string) {
 	a.sessionEnv = env
 }
 
+func (a *Agent) SetPlatformPrompt(prompt string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.platformPrompt = strings.TrimSpace(prompt)
+}
+
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
 	a.mu.Lock()
 	mode := a.mode
@@ -209,6 +222,9 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	reasoningEffort := a.reasoningEffort
 	backend := a.backend
 	appServerURL := a.appServerURL
+	systemPrompt := a.systemPrompt
+	appendPrompt := a.appendPrompt
+	platformPrompt := a.platformPrompt
 	cliBin := a.cliBin
 	cliExtraArgs := a.cliExtraArgs
 	workDir := a.workDir
@@ -230,7 +246,8 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		return newTraexAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName)
 	}
 
-	return newTraexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName)
+	instructions := buildTraexInstructions(systemPrompt, platformPrompt, appendPrompt)
+	return newTraexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, instructions)
 }
 
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {

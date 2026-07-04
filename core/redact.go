@@ -47,6 +47,19 @@ func RedactArgs(args []string) []string {
 	for i := 0; i < len(out); i++ {
 		arg := strings.ToLower(out[i])
 
+		// CLI config overrides can carry full prompt bodies. They are not
+		// credentials, but logging them would expose system instructions.
+		if (arg == "-c" || arg == "--config") && i+1 < len(out) {
+			out[i+1] = redactConfigOverrideArg(out[i+1])
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--config=") {
+			prefix := out[i][:strings.Index(out[i], "=")+1]
+			out[i] = prefix + redactConfigOverrideArg(out[i][len(prefix):])
+			continue
+		}
+
 		// --flag=value format
 		for _, f := range sensitiveFlags {
 			if strings.HasPrefix(arg, f+"=") {
@@ -65,4 +78,18 @@ func RedactArgs(args []string) []string {
 		}
 	}
 	return out
+}
+
+func redactConfigOverrideArg(arg string) string {
+	idx := strings.IndexByte(arg, '=')
+	if idx < 0 {
+		return arg
+	}
+	key := strings.TrimSpace(strings.ToLower(arg[:idx]))
+	switch key {
+	case "instructions", "system_prompt", "append_system_prompt":
+		return arg[:idx+1] + "***"
+	default:
+		return arg
+	}
 }
