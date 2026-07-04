@@ -150,3 +150,26 @@ func TestRedactArgs_SensitiveFlagWithoutValue(t *testing.T) {
 		t.Errorf("flag without value should be preserved, got %v", out)
 	}
 }
+
+func TestRedactArgs_ConfigInstructions(t *testing.T) {
+	args := []string{
+		"-c", `instructions="secret prompt"`,
+		"--config", `append_system_prompt="append prompt"`,
+		`--config=system_prompt="system prompt"`,
+		"-c", `model="gpt-5.5"`,
+	}
+	out := RedactArgs(args)
+
+	if out[1] != "instructions=***" {
+		t.Fatalf("instructions override not redacted: %q", out[1])
+	}
+	if out[3] != "append_system_prompt=***" {
+		t.Fatalf("append prompt override not redacted: %q", out[3])
+	}
+	if out[4] != "--config=system_prompt=***" {
+		t.Fatalf("system prompt equal override not redacted: %q", out[4])
+	}
+	if out[6] != `model="gpt-5.5"` {
+		t.Fatalf("non-prompt config override should remain visible: %q", out[6])
+	}
+}

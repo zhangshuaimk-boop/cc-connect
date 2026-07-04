@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,7 @@ type traexSession struct {
 	mode          string
 	baseURL       string
 	modelProvider string
+	instructions  string
 	cliBin        string
 	cliExtraArgs  []string
 	extraEnv      []string
@@ -53,7 +55,7 @@ var traexSessionForceKillWait = 2 * time.Second
 var traexContextUsageRetryDelay = 50 * time.Millisecond
 var traexContextUsageRetryCount = 4
 
-func newTraexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string) (*traexSession, error) {
+func newTraexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string, instructions string) (*traexSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	ts := &traexSession{
@@ -63,6 +65,7 @@ func newTraexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 		mode:          mode,
 		baseURL:       baseURL,
 		modelProvider: modelProvider,
+		instructions:  strings.TrimSpace(instructions),
 		cliBin:        cliBin,
 		cliExtraArgs:  cliExtraArgs,
 		extraEnv:      extraEnv,
@@ -78,6 +81,24 @@ func newTraexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 	}
 
 	return ts, nil
+}
+
+func buildTraexInstructions(systemPrompt, platformPrompt, appendPrompt string) string {
+	var parts []string
+	if systemPrompt = strings.TrimSpace(systemPrompt); systemPrompt != "" {
+		parts = append(parts, "Project system prompt:\n"+systemPrompt)
+	}
+	if platformPrompt = strings.TrimSpace(platformPrompt); platformPrompt != "" {
+		parts = append(parts, "## Formatting\n"+platformPrompt)
+	}
+	if appendPrompt = strings.TrimSpace(appendPrompt); appendPrompt != "" {
+		parts = append(parts, "Additional project instructions:\n"+appendPrompt)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func traexConfigString(key, value string) string {
+	return key + "=" + strconv.Quote(value)
 }
 
 func (ts *traexSession) Send(prompt string, images []core.ImageAttachment, files []core.FileAttachment) error {
@@ -203,6 +224,9 @@ func (ts *traexSession) buildExecArgs(prompt string, imagePaths []string) []stri
 	}
 	if ts.baseURL != "" {
 		args = append(args, "-c", fmt.Sprintf("openai_base_url=%q", ts.baseURL))
+	}
+	if ts.instructions != "" {
+		args = append(args, "-c", traexConfigString("instructions", ts.instructions))
 	}
 
 	if isResume {

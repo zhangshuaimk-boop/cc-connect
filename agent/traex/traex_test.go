@@ -200,14 +200,16 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	got, err := New(map[string]any{
-		"work_dir":         "/tmp/project",
-		"model":            "gpt-test",
-		"reasoning_effort": "x-high",
-		"mode":             "auto",
-		"backend":          "app-server",
-		"app_server_url":   "stdio",
-		"cmd":              "traex --profile dev",
-		"env":              map[string]any{"CONFIG_A": "one", "IGNORED": 2},
+		"work_dir":             "/tmp/project",
+		"model":                "gpt-test",
+		"reasoning_effort":     "x-high",
+		"mode":                 "auto",
+		"backend":              "app-server",
+		"app_server_url":       "stdio",
+		"cmd":                  "traex --profile dev",
+		"system_prompt":        "  project rules  ",
+		"append_system_prompt": "  append rules  ",
+		"env":                  map[string]any{"CONFIG_A": "one", "IGNORED": 2},
 	})
 	if err != nil {
 		t.Fatalf("New() = %v", err)
@@ -221,6 +223,9 @@ exit 0
 	}
 	if agent.cliBin != "traex" || strings.Join(agent.cliExtraArgs, " ") != "--profile dev" {
 		t.Fatalf("cli parsed as bin=%q extra=%v", agent.cliBin, agent.cliExtraArgs)
+	}
+	if agent.systemPrompt != "project rules" || agent.appendPrompt != "append rules" {
+		t.Fatalf("prompt fields = system=%q append=%q", agent.systemPrompt, agent.appendPrompt)
 	}
 	if !containsString(agent.configEnv, "CONFIG_A=one") || containsString(agent.configEnv, "IGNORED=2") {
 		t.Fatalf("configEnv = %v", agent.configEnv)
@@ -273,9 +278,12 @@ func TestStartSessionExecBackendKeepsExistingSessionPath(t *testing.T) {
 		mode:            "plan",
 		backend:         "exec",
 		cliBin:          "traex",
+		systemPrompt:    "project prompt",
+		appendPrompt:    "append prompt",
 		configEnv:       []string{"CONFIG_ENV=1"},
 		activeIdx:       -1,
 	}
+	agent.SetPlatformPrompt("platform prompt")
 
 	sess, err := agent.StartSession(context.Background(), "thread-existing")
 	if err != nil {
@@ -298,6 +306,11 @@ func TestStartSessionExecBackendKeepsExistingSessionPath(t *testing.T) {
 	}
 	if !containsString(ts.extraEnv, "CONFIG_ENV=1") {
 		t.Fatalf("extraEnv = %v, want CONFIG_ENV=1", ts.extraEnv)
+	}
+	for _, want := range []string{"Project system prompt:\nproject prompt", "## Formatting\nplatform prompt", "Additional project instructions:\nappend prompt"} {
+		if !strings.Contains(ts.instructions, want) {
+			t.Fatalf("instructions missing %q in:\n%s", want, ts.instructions)
+		}
 	}
 }
 
@@ -494,6 +507,7 @@ func TestBuildExecArgsFresh(t *testing.T) {
 		mode:          "yolo",
 		modelProvider: "llmproxy",
 		baseURL:       "https://api.example.com",
+		instructions:  "Project system prompt:\nbe concise",
 	}
 	args := ts.buildExecArgs("hello", nil)
 
@@ -516,13 +530,17 @@ func TestBuildExecArgsFresh(t *testing.T) {
 	if args[len(args)-1] != "-" {
 		t.Errorf("last arg should be '-', got %q", args[len(args)-1])
 	}
+	if !containsSequence(args, []string{"-c", "instructions=\"Project system prompt:\\nbe concise\""}) {
+		t.Fatalf("args missing instructions override in %v", args)
+	}
 }
 
 func TestBuildExecArgsResume(t *testing.T) {
 	ts := &traexSession{
-		workDir: "/tmp/test",
-		model:   "claude-sonnet-4",
-		mode:    "default",
+		workDir:      "/tmp/test",
+		model:        "claude-sonnet-4",
+		mode:         "default",
+		instructions: "## Formatting\nuse cc-connect send",
 	}
 	ts.threadID.Store("thread-abc-123")
 	args := ts.buildExecArgs("hello", nil)
@@ -536,6 +554,31 @@ func TestBuildExecArgsResume(t *testing.T) {
 	}
 	if strings.Contains(argStr, "--cd") {
 		t.Error("should not contain --cd for resume")
+	}
+	if !containsSequence(args, []string{"-c", "instructions=\"## Formatting\\nuse cc-connect send\""}) {
+		t.Fatalf("resume args missing instructions override in %v", args)
+	}
+}
+
+func TestBuildTraexInstructions(t *testing.T) {
+	got := buildTraexInstructions(" system ", " format ", " append ")
+	for _, want := range []string{
+		"Project system prompt:\nsystem",
+		"## Formatting\nformat",
+		"Additional project instructions:\nappend",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("buildTraexInstructions missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "  ") {
+		t.Fatalf("buildTraexInstructions did not trim sections:\n%s", got)
+	}
+	if got := buildTraexInstructions("", " platform only ", ""); got != "## Formatting\nplatform only" {
+		t.Fatalf("platform-only instructions = %q", got)
+	}
+	if got := buildTraexInstructions("", "", ""); got != "" {
+		t.Fatalf("empty instructions = %q", got)
 	}
 }
 
@@ -595,7 +638,7 @@ func TestBuildExecArgsResumeImagesAndProvider(t *testing.T) {
 }
 
 func TestSessionAccessorsImagesAndClose(t *testing.T) {
-	ts, err := newTraexSession(context.Background(), "traex", []string{"--profile", "dev"}, t.TempDir(), "model-a", "high", "plan", "thread-1", "https://api.example.com", []string{"A=B"}, "provider-a")
+	ts, err := newTraexSession(context.Background(), "traex", []string{"--profile", "dev"}, t.TempDir(), "model-a", "high", "plan", "thread-1", "https://api.example.com", []string{"A=B"}, "provider-a", "instructions")
 	if err != nil {
 		t.Fatalf("newTraexSession: %v", err)
 	}
@@ -757,7 +800,7 @@ printf 'fatal stderr\n' >&2
 exit 7
 `)
 
-	ts, err := newTraexSession(context.Background(), filepath.Join(binDir, "traex"), nil, t.TempDir(), "", "", "default", "", "", nil, "")
+	ts, err := newTraexSession(context.Background(), filepath.Join(binDir, "traex"), nil, t.TempDir(), "", "", "default", "", "", nil, "", "")
 	if err != nil {
 		t.Fatalf("newTraexSession: %v", err)
 	}
