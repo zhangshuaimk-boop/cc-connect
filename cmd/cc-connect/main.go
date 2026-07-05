@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -1151,17 +1154,18 @@ func main() {
 		mgmtSrv.SetRemoveProject(config.RemoveProject)
 		mgmtSrv.SetSaveProjectSettings(func(name string, u core.ProjectSettingsUpdate) error {
 			return config.SaveProjectSettings(name, config.ProjectSettingsUpdate{
-				Language:             u.Language,
-				AdminFrom:            u.AdminFrom,
-				DisabledCommands:     u.DisabledCommands,
-				WorkDir:              u.WorkDir,
-				Mode:                 u.Mode,
-				AgentType:            u.AgentType,
-				ShowContextIndicator: u.ShowContextIndicator,
-				ShowWorkdirIndicator: u.ShowWorkdirIndicator,
-				ReplyFooter:          u.ReplyFooter,
-				InjectSender:         u.InjectSender,
-				PlatformAllowFrom:    u.PlatformAllowFrom,
+				Language:                 u.Language,
+				AdminFrom:                u.AdminFrom,
+				DisabledCommands:         u.DisabledCommands,
+				WorkDir:                  u.WorkDir,
+				Mode:                     u.Mode,
+				AgentType:                u.AgentType,
+				ShowContextIndicator:     u.ShowContextIndicator,
+				ShowWorkdirIndicator:     u.ShowWorkdirIndicator,
+				ReplyFooter:              u.ReplyFooter,
+				InjectSender:             u.InjectSender,
+				InjectLarkCLICredentials: u.InjectLarkCLICredentials,
+				PlatformAllowFrom:        u.PlatformAllowFrom,
 			})
 		})
 		mgmtSrv.SetGetProjectConfig(config.GetProjectConfigDetails)
@@ -1869,9 +1873,139 @@ func buildAgentOptions(dataDir string, proj config.ProjectConfig) map[string]any
 	for k, v := range proj.Agent.Options {
 		opts[k] = v
 	}
+	injectLarkCLICredentials(opts, proj)
 	opts["cc_data_dir"] = dataDir
 	opts["cc_project"] = proj.Name
 	return opts
+}
+
+func injectLarkCLICredentials(opts map[string]any, proj config.ProjectConfig) {
+	if proj.InjectLarkCLICredentials != nil && !*proj.InjectLarkCLICredentials {
+		return
+	}
+	appID, appSecret, ok := firstFeishuAppCredentials(proj.Platforms)
+	if !ok {
+		return
+	}
+	env := agentEnvMap(opts["env"])
+	env["LARKSUITE_CLI_APP_ID"] = appID
+	env["LARKSUITE_CLI_APP_SECRET"] = appSecret
+	env["LARKSUITE_CLI_DEFAULT_AS"] = "bot"
+	if token, err := fetchLarkCLITenantAccessToken(proj.Platforms, appID, appSecret); err != nil {
+		slog.Warn("lark-cli credential injection: tenant token fetch failed", "project", proj.Name, "error", err)
+	} else if token != "" {
+		env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"] = token
+	}
+	opts["env"] = env
+}
+
+func firstFeishuAppCredentials(platforms []config.PlatformConfig) (string, string, bool) {
+	for _, platform := range platforms {
+		typ := strings.ToLower(strings.TrimSpace(platform.Type))
+		if typ != "feishu" && typ != "lark" {
+			continue
+		}
+		appID := optionString(platform.Options, "app_id")
+		appSecret := optionString(platform.Options, "app_secret")
+		if appID != "" && appSecret != "" {
+			return appID, appSecret, true
+		}
+	}
+	return "", "", false
+}
+
+func fetchLarkCLITenantAccessToken(platforms []config.PlatformConfig, appID, appSecret string) (string, error) {
+	if appID == "" || appSecret == "" {
+		return "", nil
+	}
+	domain := larkCLIOpenBaseURL(platforms, appID)
+	body, err := json.Marshal(map[string]string{
+		"app_id":     appID,
+		"app_secret": appSecret,
+	})
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(domain, "/")+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		Code              int    `json:"code"`
+		Msg               string `json:"msg"`
+		TenantAccessToken string `json:"tenant_access_token"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", err
+	}
+	if parsed.Code != 0 {
+		return "", fmt.Errorf("code=%d msg=%s", parsed.Code, parsed.Msg)
+	}
+	if strings.TrimSpace(parsed.TenantAccessToken) == "" {
+		return "", fmt.Errorf("empty tenant_access_token")
+	}
+	return parsed.TenantAccessToken, nil
+}
+
+func larkCLIOpenBaseURL(platforms []config.PlatformConfig, appID string) string {
+	for _, platform := range platforms {
+		app := optionString(platform.Options, "app_id")
+		if app != appID {
+			continue
+		}
+		if domain := optionString(platform.Options, "domain"); domain != "" {
+			return domain
+		}
+		if strings.EqualFold(strings.TrimSpace(platform.Type), "lark") {
+			return "https://open.larksuite.com"
+		}
+	}
+	return "https://open.feishu.cn"
+}
+
+func optionString(opts map[string]any, key string) string {
+	if opts == nil {
+		return ""
+	}
+	switch v := opts[key].(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return ""
+	}
+}
+
+func agentEnvMap(raw any) map[string]string {
+	switch m := raw.(type) {
+	case map[string]string:
+		out := make(map[string]string, len(m)+3)
+		for k, v := range m {
+			out[k] = v
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]string, len(m)+3)
+		for k, v := range m {
+			if s, ok := v.(string); ok {
+				out[k] = s
+			}
+		}
+		return out
+	default:
+		return make(map[string]string, 3)
+	}
 }
 
 func wireAgentProviders(agent core.Agent, agentCfg config.AgentConfig) providerWiringResult {

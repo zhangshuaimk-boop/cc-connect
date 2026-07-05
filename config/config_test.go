@@ -1886,6 +1886,21 @@ func TestLoad_ParsesResetOnIdleMins(t *testing.T) {
 	}
 }
 
+func TestLoad_ParsesInjectLarkCLICredentials(t *testing.T) {
+	configPath := writeConfigFixture(t, projectWithInjectLarkCLICredentialsFixture)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Projects[0].InjectLarkCLICredentials == nil {
+		t.Fatal("expected inject_lark_cli_credentials to be parsed")
+	}
+	if got := *cfg.Projects[0].InjectLarkCLICredentials; got {
+		t.Fatalf("inject_lark_cli_credentials = %v, want false", got)
+	}
+}
+
 func TestLoad_RejectsNegativeResetOnIdleMins(t *testing.T) {
 	configPath := writeConfigFixture(t, projectWithNegativeResetOnIdleFixture)
 
@@ -2295,6 +2310,25 @@ const projectWithResetOnIdleFixture = `
 [[projects]]
 name = "beta"
 reset_on_idle_mins = 60
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "/tmp/beta"
+
+[[projects.platforms]]
+type = "feishu"
+
+[projects.platforms.options]
+app_id = "test_app"
+app_secret = "test_secret"
+`
+
+const projectWithInjectLarkCLICredentialsFixture = `
+[[projects]]
+name = "beta"
+inject_lark_cli_credentials = false
 
 [projects.agent]
 type = "codex"

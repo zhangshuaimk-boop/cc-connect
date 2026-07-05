@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -250,6 +252,128 @@ func TestBuildAgentOptionsInjectsProjectScope(t *testing.T) {
 	}
 	if _, exists := proj.Agent.Options["cc_data_dir"]; exists {
 		t.Fatalf("project agent options mutated: %v", proj.Agent.Options)
+	}
+}
+
+func TestBuildAgentOptionsInjectsLarkCLICredentials(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/open-apis/auth/v3/tenant_access_token/internal" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"tenant_access_token":"tenant-token"}`))
+	}))
+	defer tokenServer.Close()
+
+	proj := config.ProjectConfig{
+		Name: "demo-project",
+		Agent: config.AgentConfig{
+			Options: map[string]any{
+				"env": map[string]any{
+					"EXISTING": "kept",
+				},
+			},
+		},
+		Platforms: []config.PlatformConfig{
+			{
+				Type: "external-placeholder",
+				Options: map[string]any{
+					"app_id":     "ignore",
+					"app_secret": "ignore",
+				},
+			},
+			{
+				Type: "Feishu",
+				Options: map[string]any{
+					"app_id":     "cli_test_app",
+					"app_secret": "sec_test_secret",
+					"domain":     tokenServer.URL,
+				},
+			},
+		},
+	}
+
+	got := buildAgentOptions("/tmp/data", proj)
+	env, ok := got["env"].(map[string]string)
+	if !ok {
+		t.Fatalf("env type = %T, want map[string]string", got["env"])
+	}
+	if env["EXISTING"] != "kept" {
+		t.Fatalf("existing env lost: %v", env)
+	}
+	if env["LARKSUITE_CLI_APP_ID"] != "cli_test_app" {
+		t.Fatalf("LARKSUITE_CLI_APP_ID = %q", env["LARKSUITE_CLI_APP_ID"])
+	}
+	if env["LARKSUITE_CLI_APP_SECRET"] != "sec_test_secret" {
+		t.Fatalf("LARKSUITE_CLI_APP_SECRET = %q", env["LARKSUITE_CLI_APP_SECRET"])
+	}
+	if env["LARKSUITE_CLI_DEFAULT_AS"] != "bot" {
+		t.Fatalf("LARKSUITE_CLI_DEFAULT_AS = %q", env["LARKSUITE_CLI_DEFAULT_AS"])
+	}
+	if env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"] != "tenant-token" {
+		t.Fatalf("LARKSUITE_CLI_TENANT_ACCESS_TOKEN = %q", env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"])
+	}
+	origEnv := proj.Agent.Options["env"].(map[string]any)
+	if _, exists := origEnv["LARKSUITE_CLI_APP_ID"]; exists {
+		t.Fatalf("project agent env mutated: %v", origEnv)
+	}
+}
+
+func TestBuildAgentOptionsCanDisableLarkCLICredentials(t *testing.T) {
+	disabled := false
+	proj := config.ProjectConfig{
+		Name:                     "demo-project",
+		InjectLarkCLICredentials: &disabled,
+		Agent: config.AgentConfig{
+			Options: map[string]any{
+				"env": map[string]string{"EXISTING": "kept"},
+			},
+		},
+		Platforms: []config.PlatformConfig{
+			{
+				Type: "lark",
+				Options: map[string]any{
+					"app_id":     "cli_test_app",
+					"app_secret": "sec_test_secret",
+				},
+			},
+		},
+	}
+
+	got := buildAgentOptions("/tmp/data", proj)
+	env, ok := got["env"].(map[string]string)
+	if !ok {
+		t.Fatalf("env type = %T, want map[string]string", got["env"])
+	}
+	if env["EXISTING"] != "kept" {
+		t.Fatalf("existing env lost: %v", env)
+	}
+	if _, exists := env["LARKSUITE_CLI_APP_ID"]; exists {
+		t.Fatalf("lark-cli env injected despite opt-out: %v", env)
+	}
+}
+
+func TestFirstFeishuAppCredentialsSkipsIncompletePlatforms(t *testing.T) {
+	appID, appSecret, ok := firstFeishuAppCredentials([]config.PlatformConfig{
+		{
+			Type: "feishu",
+			Options: map[string]any{
+				"app_id": "cli_missing_secret",
+			},
+		},
+		{
+			Type: "lark",
+			Options: map[string]any{
+				"app_id":     " cli_lark_app ",
+				"app_secret": " sec_lark_secret ",
+			},
+		},
+	})
+	if !ok {
+		t.Fatal("expected lark credentials to be found")
+	}
+	if appID != "cli_lark_app" || appSecret != "sec_lark_secret" {
+		t.Fatalf("credentials = (%q, %q), want trimmed lark credentials", appID, appSecret)
 	}
 }
 

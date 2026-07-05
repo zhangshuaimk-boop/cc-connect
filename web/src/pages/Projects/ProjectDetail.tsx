@@ -43,6 +43,7 @@ export default function ProjectDetail() {
   const [showWorkdirIndicator, setShowWorkdirIndicator] = useState(true);
   const [replyFooter, setReplyFooter] = useState(true);
   const [injectSender, setInjectSender] = useState(false);
+  const [injectLarkCLICredentials, setInjectLarkCLICredentials] = useState(true);
   const [platformAllowFrom, setPlatformAllowFrom] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
@@ -130,6 +131,7 @@ export default function ProjectDetail() {
         setShowWorkdirIndicator(proj.value.show_workdir_indicator !== false);
         setReplyFooter(proj.value.reply_footer !== false);
         setInjectSender(proj.value.inject_sender !== false);
+        setInjectLarkCLICredentials(proj.value.inject_lark_cli_credentials !== false);
         setProviderRefs(proj.value.provider_refs || []);
         const afMap: Record<string, string> = {};
         proj.value.platform_configs?.forEach(pc => {
@@ -179,6 +181,7 @@ export default function ProjectDetail() {
         show_workdir_indicator: showWorkdirIndicator,
         reply_footer: replyFooter,
         inject_sender: injectSender,
+        inject_lark_cli_credentials: injectLarkCLICredentials,
         platform_allow_from: platformAllowFrom,
       });
       if (res && (res as any).restart_required) {
@@ -569,6 +572,18 @@ export default function ProjectDetail() {
                 className={cn('w-10 h-6 rounded-full transition-colors', injectSender ? 'bg-accent' : 'bg-gray-300 dark:bg-gray-700')}
               >
                 <div className={cn('w-4 h-4 bg-white rounded-full transition-transform mx-1', injectSender ? 'translate-x-4' : 'translate-x-0')} />
+              </button>
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('projects.injectLarkCLICredentials', 'Bind lark-cli bot')}</label>
+                <p className="text-[11px] text-gray-400 mt-0.5">{t('projects.injectLarkCLICredentialsHint', 'Pass project bot credentials to lark-cli in agent subprocesses')}</p>
+              </div>
+              <button
+                onClick={() => setInjectLarkCLICredentials(!injectLarkCLICredentials)}
+                className={cn('w-10 h-6 rounded-full transition-colors', injectLarkCLICredentials ? 'bg-accent' : 'bg-gray-300 dark:bg-gray-700')}
+              >
+                <div className={cn('w-4 h-4 bg-white rounded-full transition-transform mx-1', injectLarkCLICredentials ? 'translate-x-4' : 'translate-x-0')} />
               </button>
             </div>
             <Input label={t('projects.language')} value={language} onChange={(e) => setLanguage(e.target.value)} placeholder="en, zh, ja..." />

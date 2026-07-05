@@ -47,6 +47,8 @@
     "replyFooterHint": "Añadir metadatos de modelo/uso al final de las respuestas",
     "injectSender": "Inyectar remitente",
     "injectSenderHint": "Anteponer la identidad del remitente a los mensajes enviados al agente",
+    "injectLarkCLICredentials": "Vincular bot lark-cli",
+    "injectLarkCLICredentialsHint": "Pasar credenciales del bot del proyecto a lark-cli en subprocesos del agente",
     "platformAccess": "Control de acceso a plataformas",
     "deleteTitle": "Eliminar proyecto",
     "deleteConfirm": "¿Está seguro de que desea eliminar el proyecto \"{{name}}\"? Se eliminará del archivo de configuración.",

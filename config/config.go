@@ -507,11 +507,12 @@ type ProjectConfig struct {
 	ShowWorkdirIndicator *bool `toml:"show_workdir_indicator,omitempty"`
 	// ReplyFooter: nil/true = render the reply footer; false = disable it
 	// entirely (the per-line indicator flags above become no-ops).
-	ReplyFooter      *bool        `toml:"reply_footer,omitempty"`
-	InjectSender     *bool        `toml:"inject_sender,omitempty"`     // prepend sender identity (platform + user ID) to each message sent to the agent
-	DisabledCommands []string     `toml:"disabled_commands,omitempty"` // commands to disable for this project (e.g. ["restart", "upgrade"])
-	AdminFrom        string       `toml:"admin_from,omitempty"`        // comma-separated user IDs allowed to run privileged commands; "*" = all allowed users
-	Users            *UsersConfig `toml:"users,omitempty"`             // per-user role config; nil = legacy behavior
+	ReplyFooter              *bool        `toml:"reply_footer,omitempty"`
+	InjectSender             *bool        `toml:"inject_sender,omitempty"`               // prepend sender identity (platform + user ID) to each message sent to the agent
+	InjectLarkCLICredentials *bool        `toml:"inject_lark_cli_credentials,omitempty"` // pass Feishu/Lark app credentials to lark-cli in agent subprocesses
+	DisabledCommands         []string     `toml:"disabled_commands,omitempty"`           // commands to disable for this project (e.g. ["restart", "upgrade"])
+	AdminFrom                string       `toml:"admin_from,omitempty"`                  // comma-separated user IDs allowed to run privileged commands; "*" = all allowed users
+	Users                    *UsersConfig `toml:"users,omitempty"`                       // per-user role config; nil = legacy behavior
 	// WorkspaceIdleTimeoutMinsLegacy is the deprecated per-project form of
 	// the workspace idle reaper timeout. New configs should set the top-level
 	// Config.WorkspaceIdleTimeoutMins instead. When the top-level field is
@@ -2744,17 +2745,18 @@ func extractLineComment(line string) string {
 
 // ProjectSettingsUpdate carries optional field updates for SaveProjectSettings.
 type ProjectSettingsUpdate struct {
-	Language             *string
-	AdminFrom            *string
-	DisabledCommands     []string
-	WorkDir              *string
-	Mode                 *string
-	AgentType            *string
-	ShowContextIndicator *bool
-	ShowWorkdirIndicator *bool
-	ReplyFooter          *bool
-	InjectSender         *bool
-	PlatformAllowFrom    map[string]string
+	Language                 *string
+	AdminFrom                *string
+	DisabledCommands         []string
+	WorkDir                  *string
+	Mode                     *string
+	AgentType                *string
+	ShowContextIndicator     *bool
+	ShowWorkdirIndicator     *bool
+	ReplyFooter              *bool
+	InjectSender             *bool
+	InjectLarkCLICredentials *bool
+	PlatformAllowFrom        map[string]string
 }
 
 // SaveProjectSettings persists project-level settings and the global language to config.toml.
@@ -2843,6 +2845,10 @@ func SaveProjectSettings(projectName string, update ProjectSettingsUpdate) error
 			v := *update.InjectSender
 			proj.InjectSender = &v
 		}
+		if update.InjectLarkCLICredentials != nil {
+			v := *update.InjectLarkCLICredentials
+			proj.InjectLarkCLICredentials = &v
+		}
 		if update.WorkDir != nil || update.Mode != nil {
 			if proj.Agent.Options == nil {
 				proj.Agent.Options = map[string]any{}
@@ -2929,6 +2935,9 @@ func GetProjectConfigDetails(projectName string) map[string]any {
 		}
 		if p.InjectSender != nil {
 			result["inject_sender"] = *p.InjectSender
+		}
+		if p.InjectLarkCLICredentials != nil {
+			result["inject_lark_cli_credentials"] = *p.InjectLarkCLICredentials
 		}
 		platConfigs := make([]map[string]any, len(p.Platforms))
 		for j, plat := range p.Platforms {

@@ -47,6 +47,8 @@
     "replyFooterHint": "在回覆末尾附加模型/用量元資訊",
     "injectSender": "注入發送者",
     "injectSenderHint": "在發送給 Agent 的訊息前附加發送者身份資訊",
+    "injectLarkCLICredentials": "綁定 lark-cli Bot",
+    "injectLarkCLICredentialsHint": "將專案 Bot 憑證傳給 Agent 子行程內的 lark-cli",
     "platformAccess": "平台存取控制",
     "deleteTitle": "刪除專案",
     "deleteConfirm": "確定要刪除專案「{{name}}」嗎？這將從設定檔中移除該專案。",

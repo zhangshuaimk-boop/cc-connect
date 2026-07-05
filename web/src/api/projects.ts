@@ -22,6 +22,7 @@ export interface ProjectDetail {
   show_workdir_indicator?: boolean;
   reply_footer?: boolean;
   inject_sender?: boolean;
+  inject_lark_cli_credentials?: boolean;
   provider_refs?: string[];
   platform_configs?: PlatformConfigInfo[];
   platforms: { type: string; connected: boolean }[];
@@ -51,6 +52,7 @@ export interface ProjectSettingsUpdate {
   show_workdir_indicator?: boolean;
   reply_footer?: boolean;
   inject_sender?: boolean;
+  inject_lark_cli_credentials?: boolean;
   platform_allow_from?: Record<string, string>;
 }
 

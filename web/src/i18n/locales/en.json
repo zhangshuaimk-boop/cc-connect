@@ -47,6 +47,8 @@
     "replyFooterHint": "Append model/usage metadata to replies",
     "injectSender": "Inject sender",
     "injectSenderHint": "Prepend sender identity to messages sent to agent",
+    "injectLarkCLICredentials": "Bind lark-cli bot",
+    "injectLarkCLICredentialsHint": "Pass project bot credentials to lark-cli in agent subprocesses",
     "platformAccess": "Platform access control",
     "deleteTitle": "Delete Project",
     "deleteConfirm": "Are you sure you want to delete project \"{{name}}\"? This will remove it from the config file.",

@@ -47,6 +47,8 @@
     "replyFooterHint": "返信の末尾にモデル/使用量のメタ情報を付加",
     "injectSender": "送信者の注入",
     "injectSenderHint": "エージェントに送信するメッセージの前に送信者の身元情報を付加",
+    "injectLarkCLICredentials": "lark-cli Botを関連付け",
+    "injectLarkCLICredentialsHint": "プロジェクトBot認証情報をエージェント子プロセス内のlark-cliへ渡す",
     "platformAccess": "プラットフォームのアクセス制御",
     "deleteTitle": "プロジェクトを削除",
     "deleteConfirm": "プロジェクト「{{name}}」を削除してもよろしいですか？設定ファイルから削除されます。",
